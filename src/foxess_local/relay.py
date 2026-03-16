@@ -34,7 +34,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
     datefmt="%H:%M:%S",
 )
-log = logging.getLogger("mitm")
+log = logging.getLogger("foxess.relay")
 
 
 def make_server_ssl_ctx() -> ssl.SSLContext:
@@ -154,7 +154,7 @@ async def _run():
         ssl=server_ctx,
     )
     addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
-    log.info("MITM relay listening on %s", addrs)
+    log.info("Local proxy listening on %s", addrs)
     log.info("Upstream: %s:%s", UPSTREAM_HOST, UPSTREAM_PORT)
     log.info("Captures go to: %s/", CAPTURE_DIR)
 

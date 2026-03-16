@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Remove FoxESS MITM relay UniFi NAT rules via API.
+# Remove FoxESS local proxy UniFi NAT rules via API.
 set -euo pipefail
 
 UNIFI_URL="${UNIFI_URL:?Set UNIFI_URL}"
 UNIFI_TOKEN="${UNIFI_TOKEN:?Set UNIFI_TOKEN}"
 NAT_API="$UNIFI_URL/proxy/network/v2/api/site/default/nat"
 
-echo "FoxESS MITM relay — uninstall (UniFi API)"
+echo "FoxESS local proxy — uninstall (UniFi API)"
 echo ""
 
 # Find and delete our rules

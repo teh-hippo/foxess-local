@@ -135,10 +135,10 @@ Sent every ~90 seconds.
 
 ## Proposed Architecture for HA Integration
 
-### Option A: MITM Relay + HA Integration (current approach)
+### Option A: Local Proxy + HA Integration (current approach)
 
 ```
-[Dongle] --TLS--> [Router DNAT] --> [MITM Relay on WSL] --TLS--> [FoxESS Cloud]
+[Dongle] --TLS--> [Router DNAT] --> [Local Proxy] --TLS--> [FoxESS Cloud]
                                           |
                                     [JSON-lines log]
                                           |

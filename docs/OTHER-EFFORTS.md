@@ -21,7 +21,7 @@ Key differences:
 | Encryption | TLS (self-signed) | Plaintext + XOR obfuscation |
 | Framing | `7E7E`/`E7E7` | Modbus-like 8-byte header |
 | Checksum | CRC-16/Modbus (BE) | CRC-16/Modbus (MSB-first) |
-| Interception | DNAT + TLS MITM | DNAT (no TLS needed) |
+| Interception | DNAT + TLS proxy | DNAT (no TLS needed) |
 | Documentation | [nwf's Ramblings](https://www.ietfng.org/nwf/misc/growatt-protocol.html) | Well documented |
 
 **Significance**: Grott proves the proxy-interception approach works long-term for HA integration.
@@ -182,11 +182,19 @@ The FoxESS datalogger's security posture (persistent AP, cleartext password, sel
    - NVS partition: stored WiFi credentials, server config, device serial numbers
    - OTA update mechanism and any signature verification
 
-   **What you need**:
-   - USB-to-TTL serial adapter (CH340G, FT232, CP2102 — 3.3V logic)
-   - Screwdriver/pry tool to open the IP65 housing
-   - 4 jumper wires (TX, RX, GND, 3.3V)
-   - `pip install esptool`
+   **What you need** depends on what's inside the housing (unknown until opened):
+
+   | Option | Cost | Requires soldering | Best if... |
+   |--------|------|--------------------|------------|
+   | [Pogo pin snap-on programmer](https://www.tindie.com/products/petl/esp32-and-esp32-s3-wroom-pogo-pin-programmer-board/) | ~$25 | No | ESP32-WROOM module is physically accessible and unobstructed. Press onto module, USB-C to laptop, run esptool. Built-in CH340, reset + boot buttons. [Open-source design](https://github.com/petl/ESP32_wroom_pogo_pin_programmer). |
+   | CP2102 USB-to-TTL adapter | ~$3 | Yes (or hold wires) | Cramped PCB, test pads only. 4 wires: TX→RX, RX→TX, GND, 3.3V. Manually hold GPIO0 low at boot. Search AliExpress "CP2102 USB TTL 3.3V". |
+   | Do nothing yet | $0 | — | **Recommended first step.** Open the housing, photograph the PCB, then decide. |
+
+   **Step 1 is always: open the case and photograph the PCB.**
+   We don't know if the ESP32-WROOM is exposed, if test pads are labelled, or if other components block access.
+   The choice of tool depends entirely on what's inside.
+
+   Once open, also run `espefuse.py summary` before attempting a full dump — if flash encryption is enabled, the dump will be unreadable garbage and there's no point continuing.
 
    **The dual-MCU complication**: The ESP32 flash only contains the WiFi/cloud firmware.
    The STM32 (Modbus/RS485 handler) has its own flash, dumpable via SWD if read protection isn't set.

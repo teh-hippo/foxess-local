@@ -27,7 +27,7 @@ graph TB
 
     subgraph "🏠 Home Network"
         router["Router<br/>NAT rules"]
-        relay["foxess-relay<br/>TLS MITM proxy"]
+        relay["foxess-relay<br/>local proxy"]
         ha["Home Assistant"]
     end
 

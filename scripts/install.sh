@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the FoxESS MITM relay — UniFi NAT rules via API.
+# Install the FoxESS local proxy — UniFi NAT rules via API.
 #
 # Creates two persistent NAT rules in UniFi (survive reboots):
 #   1. DNAT: redirect dongle → cloud to relay host
@@ -21,7 +21,7 @@ RELAY_HOST="${FOXESS_RELAY_HOST:?Set FOXESS_RELAY_HOST}"
 
 NAT_API="$UNIFI_URL/proxy/network/v2/api/site/default/nat"
 
-echo "FoxESS MITM relay — install (UniFi API)"
+echo "FoxESS local proxy — install (UniFi API)"
 echo "  Dongle:  $DONGLE_IP:* → *:$CLOUD_PORT"
 echo "  Relay:   $RELAY_HOST:$CLOUD_PORT"
 echo ""

@@ -15,14 +15,14 @@ wsl hostname -I
 
 # Add (from elevated PowerShell, or WSL via sudo.exe)
 sudo.exe netsh interface portproxy add v4tov4 listenport=14431 listenaddress=0.0.0.0 connectport=14431 connectaddress=<WSL_IP>
-sudo.exe netsh advfirewall firewall add rule name="FoxESS MITM" dir=in action=allow protocol=TCP localport=14431
+sudo.exe netsh advfirewall firewall add rule name="FoxESS Local Proxy" dir=in action=allow protocol=TCP localport=14431
 
 # Check
 netsh interface portproxy show v4tov4
 
 # Remove
 sudo.exe netsh interface portproxy delete v4tov4 listenport=14431 listenaddress=0.0.0.0
-sudo.exe netsh advfirewall firewall delete rule name="FoxESS MITM"
+sudo.exe netsh advfirewall firewall delete rule name="FoxESS Local Proxy"
 ```
 
 ## WSL IP changes on restart
