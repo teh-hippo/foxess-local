@@ -76,11 +76,16 @@ Source: [FCC/Alibaba IP ownership](https://whois.arin.net/), web search results.
 | Protocol MCU | STM32F103C8T6 (Cortex-M3) | 🟡 High — community forum reports, not officially confirmed |
 | Architecture | Dual-MCU: ESP32 (WiFi/cloud) + STM32 (RS485/Modbus) | 🟡 High |
 | WiFi | 802.11 b/g/n, 2.4 GHz | 🟢 Confirmed — official datasheet |
-| Inverter connection | Proprietary threaded connector (RS485 + power) | 🟢 Confirmed |
+| Inverter connector | **USB-A physical shape, but NOT standard USB electrically.** Carries RS485 differential signals (A/B) + 7–12V DC power. Do not connect standard USB devices. | 🟢 Confirmed |
 | RS485 baud | 9600/8/N/1 | 🟢 Confirmed — official datasheet |
-| Power | DC 7–12V from inverter | 🟢 Confirmed |
+| Power | DC 7–12V from inverter (via the USB-A connector, not 5V) | 🟢 Confirmed |
 | IP Rating | IP65 | 🟢 Confirmed |
 | Persistent AP | SSID `W-XXXXXXXX`, password `mtmt2020` | 🟢 Confirmed — official guides + CVE |
+
+> **The "USB" connector is misleading.**
+> FoxESS markets this as a "USB WiFi dongle" and uses a standard USB-A plug, but the electrical interface is proprietary: RS485 data + 7–12V power, not USB 2.0 signals + 5V.
+> This is a cost-saving measure — USB-A connectors are cheap and weatherproof variants are readily available.
+> Plugging a standard USB device into the inverter's datalogger port could damage it.
 
 Source: Official FoxESS datasheet, [foxesscommunity.com](https://foxesscommunity.com), [CP-at-home/FoxESS-CVE](https://github.com/CP-at-home/FoxESS-CVE).
 
@@ -147,10 +152,22 @@ The FoxESS datalogger's security posture (persistent AP, cleartext password, sel
 
 ### High Priority
 
-1. **Firmware dump via esptool**: Open the dongle, connect USB-to-serial adapter to ESP32 UART0 (GPIO1=TX, GPIO3=RX, GND, 3.3V), hold GPIO0 low at power-up to enter bootloader, then:
+1. **Firmware dump via esptool**: This requires opening the dongle's housing and connecting directly to the ESP32 chip's UART test pads on the PCB.
+   You need a **USB-to-TTL serial adapter** (e.g. CP2102 or CH340G, ~$2 on AliExpress — search "CP2102 USB TTL 3.3V").
+   This is a small board that converts your laptop's USB to 3.3V serial signals.
+   It is completely unrelated to the dongle's external USB-A connector.
+
+   Connect the adapter to the ESP32's UART0 test pads on the PCB:
+   - Adapter TX → ESP32 GPIO3 (RX)
+   - Adapter RX → ESP32 GPIO1 (TX)
+   - Adapter GND → ESP32 GND
+   - Adapter 3.3V → ESP32 3.3V (to power the chip during dump)
+   - Hold GPIO0 to GND at power-up to enter bootloader mode
+
+   Then run:
    ```
-   esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 read_flash 0 0x400000 foxess_dump.bin
    espefuse.py --chip esp32 --port /dev/ttyUSB0 summary  # check if flash encryption is enabled
+   esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 read_flash 0 0x400000 foxess_dump.bin
    ```
    **Likelihood of success**: High.
    Most cheap Chinese IoT devices do not enable flash encryption or secure boot (cost/convenience tradeoff).
