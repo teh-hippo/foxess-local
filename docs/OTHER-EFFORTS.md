@@ -147,8 +147,35 @@ The FoxESS datalogger's security posture (persistent AP, cleartext password, sel
 
 ### High Priority
 
-1. **Firmware dump**: Open the dongle, connect UART, dump ESP32 flash with `esptool.py`.
-   Would reveal: hardcoded server IPs, TLS cert handling, protocol state machine, potentially the STM32 UART protocol.
+1. **Firmware dump via esptool**: Open the dongle, connect USB-to-serial adapter to ESP32 UART0 (GPIO1=TX, GPIO3=RX, GND, 3.3V), hold GPIO0 low at power-up to enter bootloader, then:
+   ```
+   esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 read_flash 0 0x400000 foxess_dump.bin
+   espefuse.py --chip esp32 --port /dev/ttyUSB0 summary  # check if flash encryption is enabled
+   ```
+   **Likelihood of success**: High.
+   Most cheap Chinese IoT devices do not enable flash encryption or secure boot (cost/convenience tradeoff).
+   If `FLASH_CRYPT_CNT` eFuse has an odd number of bits set, flash is encrypted and the dump will be garbage.
+   If eFuses are clear, the dump will contain readable firmware.
+
+   **What the dump would reveal**:
+   - Hardcoded server IPs and port (confirming our discovery of port 14431)
+   - TLS certificate handling (does it validate? pin? accept any?)
+   - The cloud protocol state machine (confirming our reverse engineering)
+   - The ESP32↔STM32 internal UART protocol (currently unknown)
+   - NVS partition: stored WiFi credentials, server config, device serial numbers
+   - OTA update mechanism and any signature verification
+
+   **What you need**:
+   - USB-to-TTL serial adapter (CH340G, FT232, CP2102 — 3.3V logic)
+   - Screwdriver/pry tool to open the IP65 housing
+   - 4 jumper wires (TX, RX, GND, 3.3V)
+   - `pip install esptool`
+
+   **The dual-MCU complication**: The ESP32 flash only contains the WiFi/cloud firmware.
+   The STM32 (Modbus/RS485 handler) has its own flash, dumpable via SWD if read protection isn't set.
+   The STM32 firmware would reveal the Modbus register polling sequence and the internal UART protocol.
+
+   **Analysis tools**: [ESP-Firmware-Toolbox](https://github.com/wilco375/ESP-Firmware-Toolbox), `binwalk`, `strings`, Ghidra with Xtensa processor module.
 
 2. **The 0x37 embedded frame**: Our captures show cmd `0x37` embeds a `0x02` data frame.
    Is this "last known reading before reconnect"?
@@ -175,12 +202,15 @@ The FoxESS datalogger's security posture (persistent AP, cleartext password, sel
    [foxess_modbus register map](https://github.com/nathanmarlor/foxess_modbus).
    If the data frame is just serialized Modbus registers, the order should match.
 
-7. **Multi-day todayYield tracking**: Does `todayYield` reset at midnight or at
-   sunrise?
-   Capture the first frame of the day to find out.
+7. ~~**Multi-day todayYield tracking**~~: **RESOLVED**.
+   `todayYield` resets to 0.0 at inverter power-up each morning (not midnight).
+   `generation` (lifetime) is continuous and never resets.
+   Confirmed across the overnight capture session.
 
-8. **Offline behavior**: What happens to our relay when the dongle is offline?
-   Does the relay correctly handle the reconnection at sunrise?
+8. ~~**Offline behavior**~~: **RESOLVED**.
+   The relay handles disconnection and reconnection gracefully.
+   Ran 15+ hours overnight with no crashes.
+   Dongle reconnects at sunrise to a potentially different server IP each day.
 
 9. **FoxESS LAN dongle protocol**: Does it use the same `7E7E`/`E7E7` protocol
    but over Ethernet?
