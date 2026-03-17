@@ -2,7 +2,8 @@
 
 > **Status**: Reverse-engineered from traffic capture. Not official documentation.
 > **Version**: Based on FoxESS WiFi Datalogger V2.0 with an ENR-series inverter, firmware 1.24/1.03/1.31.
-> **Date**: 2026-03-16
+> **Date**: 2026-03-17
+> **Verified**: 261 data frames, 0 anomalies across a full day (sunrise to sunset) on 2026-03-17.
 
 ## 1. Transport
 
@@ -270,10 +271,9 @@ All sensor values are **signed 16-bit big-endian integers** unless otherwise not
 | 66 | 2 | int16 BE | ÷10 | Today's yield | kWh | `todayYield` — resets to 0 at inverter power-up each morning |
 | 68 | 4 | uint32 BE | ÷10 | Lifetime generation | kWh | `generation` — never resets, continuous across days |
 | 72–95 | 24 | — | — | Unknown / battery region | — | Likely battery data for models with storage |
-| 96 | 2 | int16 BE | — | Multiplexed type indicator | — | Rotates through values: 0, 4, 52, 53. Determines meaning of offsets 98–100. See §5.4. |
-| 98 | 2 | int16 BE | — | Multiplexed data A | — | Meaning depends on off96 type. See §5.4. |
-| 100 | 2 | int16 BE | — | Multiplexed data B | — | Meaning depends on off96 type. See §5.4. |
-| 102–117 | 16 | — | — | Unknown | — | Mostly zeros |
+| 96 | 2 | int16 BE | — | Multiplexed type indicator | — | Rotates through values: 0, 4, 52, 53. Determines meaning of offsets 98–110. See §5.4. |
+| 98–110 | 14 | int16 BE | — | Multiplexed data | — | Meaning depends on off96 type. See §5.4. |
+| 112–117 | 6 | — | — | Unknown | — | Mostly zeros |
 | 118 | 2 | int16 BE | — | Session message counter | — | Increments by 3 per reporting cycle (one per message: 0x02 + 0x06 + 0x01). Resets per session. |
 | 120 | 2 | int16 BE | — | Unknown counter | — | Small values (1–8), increments slowly through the day |
 | 122–153 | 32 | — | — | Unknown | — | Mostly zeros |
@@ -283,22 +283,26 @@ All sensor values are **signed 16-bit big-endian integers** unless otherwise not
 | 170 | 4 | uint32 BE | — | Unknown accumulator | — | Large values (215M–288M), slowly varying |
 | 174–237 | 64 | — | — | Unknown / reserved | — | All zeros |
 
-### 5.4 Multiplexed Data Block (offsets 96–100)
+### 5.4 Multiplexed Data Block (offsets 96–110)
 
-Offsets 96, 98, and 100 carry different data depending on the type indicator at offset 96.
-The type rotates through a 4-state cycle approximately every 10 data frames (~15 minutes):
+Offsets 96 through 110 carry different data depending on the type indicator at offset 96.
+The type rotates through a 4-state cycle approximately every 10 data frames (~15 minutes).
+The entire 16-byte block changes meaning per type.
 
-| off96 value | off98 | off100 | Notes |
-|-------------|-------|--------|-------|
-| 0 | 0 | 0 | Empty / no data |
-| 4 | 0 | Large counter (2768–19601) | Counter increases ~5400 per occurrence |
-| 52 (0x34) | Negative signed value (-1941 to -624) | 17 (constant) | off98 gets less negative through the day (correlates with increasing generation) |
-| 53 (0x35) | Large negative (-14138 to -13323) | Small increasing (3–29) | off98 slowly increases (less negative); off100 increments by ~8–10 per occurrence |
+| off96 value | off98 | off100 | off102 | off104 | off106 | off108 | off110 |
+|-------------|-------|--------|--------|--------|--------|--------|--------|
+| 0 | 0 | 0 | ~2051 | ~2166 | 0 | ~2039 | 0 |
+| 4 | 0 | Large counter | 0 | 0 | 0 | 0 | 0 |
+| 52 (0x34) | Negative (varies) | 17 | 0 | 0 | 0 | 0 | 0 |
+| 53 (0x35) | Large negative | Small increasing | ~386 | ~355 | 0 | ~349 | 2026 |
 
-The rotation order appears to be: 52 → 53 → 0 → 4 → 0 → 52 → ...
+When off96=0, off102/104/108 show values consistent with three-phase grid voltages (÷10: ~205V, ~217V, ~204V).
+These may be S-phase and T-phase measurements from the grid CT.
 
-The exact meaning of each type is not yet determined.
-The pattern suggests these are auxiliary meter or CT readings from different phases or accumulation periods, multiplexed into the same payload positions.
+When off96=53, off102/104/108 appear to be different quantities (possibly temperatures or firmware-related, as off110=2026 could be a year).
+
+The exact meaning of each type is under investigation.
+Cross-referencing with the `foxess_modbus` Modbus register map may help identify these fields.
 
 ### 5.5 PV3/PV4 Phantom Voltage
 
