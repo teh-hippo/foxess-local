@@ -9,6 +9,7 @@ dependencies = []
 foxess-relay = "foxess_local.relay:main"
 foxess-decode = "foxess_local.decode:main"
 foxess-live = "foxess_local.live:main"
+foxess-network = "foxess_local.network:main"
 
 [build-system]
 requires = ["hatchling"]

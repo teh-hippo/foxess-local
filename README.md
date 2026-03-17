@@ -80,6 +80,33 @@ Historical overnight data does not exist — it must be sourced from the grid me
 
 The relay is transparent — the FoxESS cloud still receives all data normally.
 
+## ⚠️ Security: isolate the dongle
+
+The FoxESS WiFi datalogger has a **permanently broadcasting WiFi access point** with a hardcoded, universal password (`mtmt2020`) that cannot be changed.
+The SSID is predictable (`W-` followed by part of the serial number) and cannot be disabled.
+
+Anyone within WiFi range can connect to this AP and retrieve the home WiFi network name and password in cleartext.
+This is an automatic response — no interaction or authentication required beyond the AP password.
+
+**If the dongle is on your main network, a stolen password gives full LAN access.**
+
+The recommended mitigation is to place the dongle on a dedicated, isolated WiFi network (VLAN).
+If the AP password is exploited, the attacker only reaches an isolated network with a single device on it.
+
+This project includes a network isolation tool:
+
+```bash
+uv run foxess-network setup     # Create isolated VLAN, WiFi SSID, firewall, NAT
+uv run foxess-network status    # Check current state
+uv run foxess-network migrate   # Instructions to move dongle to new network
+uv run foxess-network teardown  # Remove everything
+```
+
+The proxy works across VLANs — the DNAT rule redirects the dongle's traffic to the relay regardless of which subnet the dongle is on.
+A firewall rule allows the dongle to reach the relay port but blocks all other access to the main LAN.
+
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for full details on the datalogger's security vulnerabilities.
+
 ## Quick start
 
 ```bash
@@ -92,8 +119,8 @@ mkdir -p certs
 openssl req -x509 -newkey rsa:2048 -keyout certs/server.key -out certs/server.pem \
   -days 36500 -nodes -subj "/C=CN/ST=JiangSu/L=Wuxi/O=FoxESS/CN=monitor"
 
-# 3. Install network rules (UniFi API, persistent)
-source .env && ./scripts/install.sh
+# 3. Set up network isolation + NAT rules
+uv run foxess-network setup
 
 # 4. Start the relay
 uv run foxess-relay
@@ -111,8 +138,9 @@ uv run foxess-live
 | `uv run foxess-live --once` | Print latest reading and exit |
 | `uv run foxess-decode captures/` | Decode all captured data frames |
 | `uv run foxess-decode captures/ --latest --json` | Latest reading as JSON |
-| `./scripts/install.sh` | Create UniFi NAT rules (requires `source .env`) |
-| `./scripts/uninstall.sh` | Remove UniFi NAT rules |
+| `uv run foxess-network setup` | Create isolated IoT network + NAT rules |
+| `uv run foxess-network status` | Check network isolation status |
+| `uv run foxess-network teardown` | Remove all managed network rules |
 
 ## Network setup
 
@@ -120,17 +148,18 @@ The dongle connects to a hardcoded IP (not hostname) on port 14431.
 To intercept:
 
 1. **DNAT rule**: redirect the dongle's outbound traffic to the relay host
-2. **MASQUERADE rule**: hairpin NAT fix when relay is on the same subnet
+2. **MASQUERADE rule**: hairpin NAT for same-subnet or cross-VLAN redirect
 
-Both rules are managed via the **UniFi Network API** (persistent, no SSH required).
-See `scripts/install.sh` for the exact API calls, or create manually in UniFi UI under **Policy Engine → NAT → Dest.
-NAT**.
+The `foxess-network` tool manages these via the **UniFi Network API** (persistent, no SSH required).
+It also creates an isolated VLAN network, dedicated WiFi SSID, and firewall rules.
 
 For non-UniFi routers, equivalent `iptables` rules:
 ```bash
 iptables -t nat -A PREROUTING -s $DONGLE_IP -p tcp --dport 14431 -j DNAT --to-destination $RELAY_HOST
 iptables -t nat -A POSTROUTING -s $DONGLE_IP -d $RELAY_HOST -p tcp --dport 14431 -j MASQUERADE
 ```
+
+For cross-VLAN setups, add a firewall rule allowing the dongle's subnet to reach the relay host on port 14431, and block all other inter-VLAN traffic.
 
 ## Protocol
 
