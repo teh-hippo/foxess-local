@@ -270,17 +270,41 @@ All sensor values are **signed 16-bit big-endian integers** unless otherwise not
 | 66 | 2 | int16 BE | ÷10 | Today's yield | kWh | `todayYield` — resets to 0 at inverter power-up each morning |
 | 68 | 4 | uint32 BE | ÷10 | Lifetime generation | kWh | `generation` — never resets, continuous across days |
 | 72–95 | 24 | — | — | Unknown / battery region | — | Likely battery data for models with storage |
-| 96 | 2 | int16 BE | — | Unknown flag | — | Intermittent (0, 4, or 50+) |
-| 98 | 4 | uint32 BE | — | Unknown | — | Large values, appears intermittently |
+| 96 | 2 | int16 BE | — | Multiplexed type indicator | — | Rotates through values: 0, 4, 52, 53. Determines meaning of offsets 98–100. See §5.4. |
+| 98 | 2 | int16 BE | — | Multiplexed data A | — | Meaning depends on off96 type. See §5.4. |
+| 100 | 2 | int16 BE | — | Multiplexed data B | — | Meaning depends on off96 type. See §5.4. |
 | 102–117 | 16 | — | — | Unknown | — | Mostly zeros |
-| 118 | 2 | int16 BE | — | Session frame counter | — | Increments ~2.2/min since connection start |
-| 120 | 2 | int16 BE | — | Unknown counter | — | Slow increment (7 → 14 over 4 hours) |
+| 118 | 2 | int16 BE | — | Session message counter | — | Increments by 3 per reporting cycle (one per message: 0x02 + 0x06 + 0x01). Resets per session. |
+| 120 | 2 | int16 BE | — | Unknown counter | — | Small values (1–8), increments slowly through the day |
 | 122–153 | 32 | — | — | Unknown | — | Mostly zeros |
-| 154 | 2 | int16 BE | — | Static flag | — | Always 2 |
+| 154 | 2 | int16 BE | — | Static flag | — | Values: 0 or 2 |
 | 156 | 2 | int16 BE | — | Static flag | — | Always 3 |
 | 158–169 | 12 | — | — | Unknown | — | Zeros |
-| 170 | 4 | uint32 BE | — | Unknown accumulator | — | Slowly varying |
+| 170 | 4 | uint32 BE | — | Unknown accumulator | — | Large values (215M–288M), slowly varying |
 | 174–237 | 64 | — | — | Unknown / reserved | — | All zeros |
+
+### 5.4 Multiplexed Data Block (offsets 96–100)
+
+Offsets 96, 98, and 100 carry different data depending on the type indicator at offset 96.
+The type rotates through a 4-state cycle approximately every 10 data frames (~15 minutes):
+
+| off96 value | off98 | off100 | Notes |
+|-------------|-------|--------|-------|
+| 0 | 0 | 0 | Empty / no data |
+| 4 | 0 | Large counter (2768–19601) | Counter increases ~5400 per occurrence |
+| 52 (0x34) | Negative signed value (-1941 to -624) | 17 (constant) | off98 gets less negative through the day (correlates with increasing generation) |
+| 53 (0x35) | Large negative (-14138 to -13323) | Small increasing (3–29) | off98 slowly increases (less negative); off100 increments by ~8–10 per occurrence |
+
+The rotation order appears to be: 52 → 53 → 0 → 4 → 0 → 52 → ...
+
+The exact meaning of each type is not yet determined.
+The pattern suggests these are auxiliary meter or CT readings from different phases or accumulation periods, multiplexed into the same payload positions.
+
+### 5.5 PV3/PV4 Phantom Voltage
+
+On inverters without PV strings connected to inputs 3 and 4, the PV3 voltage field (offset 48) intermittently shows small values (20–24V) with zero current.
+This is a phantom/floating voltage on the unconnected input and does not represent real power generation.
+PV4 remains consistently zero in this configuration.
 
 **Derived values** (not transmitted, calculated from the above):
 - `pv1Power` = `pv1Volt × pv1Current ÷ 1000` (kW)
