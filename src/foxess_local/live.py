@@ -6,9 +6,7 @@ Usage:
 """
 
 import argparse
-import glob
 import json
-import os
 import pathlib
 import sys
 import time
@@ -147,7 +145,7 @@ def main():
             # Clear previous output
             print("\033[2J\033[H", end="")
             print(format_reading(reading))
-            print(f"\n  \033[2mUpdates every ~90s. Ctrl+C to stop.\033[0m")
+            print("\n  \033[2mUpdates every ~90s. Ctrl+C to stop.\033[0m")
     except KeyboardInterrupt:
         print("\nStopped.")
 

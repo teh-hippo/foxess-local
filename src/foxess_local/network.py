@@ -230,7 +230,7 @@ def cmd_setup(cfg: Config) -> bool:
     fw = _find_fw_allow_rule(cfg)
     default_zone = _find_default_zone(cfg)
     if fw:
-        print(f"  ✓ Firewall allow-relay rule")
+        print("  ✓ Firewall allow-relay rule")
     elif zone_id and default_zone:
         print("  + Creating firewall allow-relay rule...")
         _v2(cfg, "firewall-policies", "POST", {
@@ -405,16 +405,16 @@ def cmd_migrate(cfg: Config) -> None:
     dongle = _find_dongle(cfg)
     if not dongle:
         print("  ✗ Dongle not connected. Connect it to the IoT SSID first:")
-        print(f"    1. Join dongle AP (W-XXXXXXX / mtmt2020)")
-        print(f"    2. Open http://192.168.1.1/")
+        print("    1. Join dongle AP (W-XXXXXXX / mtmt2020)")
+        print("    2. Open http://192.168.1.1/")
         print(f'    3. Set WiFi to "{cfg.iot_ssid_name}" with the configured password')
-        print(f"    4. Dongle reboots (~60s), then re-run this command")
+        print("    4. Dongle reboots (~60s), then re-run this command")
         return
 
     ssid = dongle.get("essid", "")
     if cfg.iot_ssid_name not in ssid:
         print(f"  ⚠ Dongle is on '{ssid}', not '{cfg.iot_ssid_name}'")
-        print(f"    Reconfigure via dongle AP → http://192.168.1.1/")
+        print("    Reconfigure via dongle AP → http://192.168.1.1/")
         return
 
     current_ip = dongle.get("ip", "?")
@@ -430,7 +430,7 @@ def cmd_migrate(cfg: Config) -> None:
             "fixed_ip": cfg.iot_dongle_ip,
             "network_id": net["_id"] if net else "",
         })
-        print(f"  ✓ Fixed IP assigned. Takes effect on next DHCP renewal.")
+        print("  ✓ Fixed IP assigned. Takes effect on next DHCP renewal.")
 
 
 # ---------------------------------------------------------------------------

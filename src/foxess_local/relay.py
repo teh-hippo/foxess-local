@@ -62,7 +62,7 @@ class CaptureLog:
 
     def write(self, direction: str, data: bytes):
         record = {
-            "ts": datetime.datetime.utcnow().isoformat() + "Z",
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "dir": direction,
             "len": len(data),
             "hex": data.hex(),
@@ -114,7 +114,7 @@ async def handle_client(
     peer = client_writer.get_extra_info("peername")
     log.info("New connection from %s", peer)
 
-    ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     CAPTURE_DIR.mkdir(exist_ok=True)
     capture = CaptureLog(CAPTURE_DIR / f"capture_{ts}.jsonl")
 

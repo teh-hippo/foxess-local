@@ -10,7 +10,6 @@ Usage:
 """
 
 import argparse
-import glob
 import json
 import pathlib
 import sys
