@@ -251,13 +251,17 @@ Contains the datalogger's module serial number and a timestamp.
 ### 4.7 Real-Time Data Report — `0x02` (Client → Server)
 
 Primary data message.
-Sent every ~90 seconds as the first message in a repeating 3-message cycle (`0x02` → `0x06` → `0x01`).
+Sent as part of a repeating 3-message cycle (`0x02`, `0x06`, `0x01`).
+The cycle order is circular — the starting message varies per session.
 Contains all real-time inverter sensor readings.
 
 **Total frame size**: 251 bytes.
 **Payload length**: 238 bytes.
 
 All sensor values are **signed 16-bit big-endian integers** unless otherwise noted.
+
+Cloud API correlation: of 44 cloud variables returned for this inverter, 22 map directly to offsets in this frame.
+The remaining cloud variables are either derived server-side (e.g. pvPower = pv1V×pv1A + pv2V×pv2A) or zero for single-phase non-battery inverters (S/T phase, battery, meter2).
 
 | Offset | Size | Type | Scale | Field | Unit | Cloud API equivalent |
 |--------|------|------|-------|-------|------|---------------------|
@@ -296,14 +300,14 @@ All sensor values are **signed 16-bit big-endian integers** unless otherwise not
 | 64 | 2 | int16 BE | raw | Ambient temperature | °C | `ambientTemperation` |
 | 66 | 2 | int16 BE | ÷10 | Today's yield | kWh | `todayYield` — resets to 0 at inverter power-up each morning |
 | 68 | 4 | uint32 BE | ÷10 | Lifetime generation | kWh | `generation` — never resets, continuous across days |
-| 72–95 | 24 | — | — | Unknown / battery region | — | Likely battery data for models with storage |
+| 72–95 | 24 | — | — | Battery / storage region | — | All zeros on non-battery inverters. Likely SoC, charge/discharge power, battery voltage for storage models. |
 | 96 | 2 | int16 BE | — | Multiplexed type indicator | — | Rotates through values: 0, 4, 52, 53. Determines meaning of offsets 98–110. See §5.4. |
-| 98–110 | 14 | int16 BE | — | Multiplexed data | — | Meaning depends on off96 type. See §5.4. |
-| 112–117 | 6 | — | — | Unknown | — | Mostly zeros |
-| 118 | 2 | int16 BE | — | Session message counter | — | Increments by 3 per reporting cycle (one per message: 0x02 + 0x06 + 0x01). Resets per session. |
-| 120 | 2 | int16 BE | — | Unknown counter | — | Small values (1–8), increments slowly through the day |
-| 122–153 | 32 | — | — | Unknown | — | Mostly zeros |
-| 154 | 2 | int16 BE | — | Static flag | — | Values: 0 or 2 |
+| 98–110 | 14 | int16 BE | — | Multiplexed data | — | Not exposed by cloud API. Inverter-internal diagnostics. See §5.4. |
+| 112–117 | 6 | — | — | Reserved | — | Always zeros |
+| 118 | 2 | int16 BE | — | Session message counter | — | Increments by 3 per reporting cycle (one per message type). Resets per session. Not in cloud API. |
+| 120 | 2 | int16 BE | — | Unknown counter | — | Small values (1–8), increments slowly through the day. Not in cloud API. |
+| 122–153 | 32 | — | — | Reserved | — | Always zeros |
+| 154 | 2 | int16 BE | — | Static flag | — | Values: 0 or 2. Not in cloud API. |
 | 156 | 2 | int16 BE | — | Static flag | — | Always 3 |
 | 158–169 | 12 | — | — | Unknown | — | Zeros |
 | 170 | 4 | uint32 BE | — | Unknown accumulator | — | Large values (215M–288M), slowly varying |
@@ -323,18 +327,31 @@ The entire 16-byte block changes meaning per type.
 | 53 (0x35) | Large negative | Small increasing | ~386 | ~355 | 0 | ~349 | 2026 |
 
 When off96=0, off102/104/108 show values consistent with three-phase grid voltages (÷10: ~205V, ~217V, ~204V).
-These may be S-phase and T-phase measurements from the grid CT.
+When off96=53, off102/104/108 carry different values (~386, ~355, ~349), with off110=2026 possibly a year or firmware identifier.
 
-When off96=53, off102/104/108 appear to be different quantities (possibly temperatures or firmware-related, as off110=2026 could be a year).
-
-The exact meaning of each type is under investigation.
-Cross-referencing with the `foxess_modbus` Modbus register map may help identify these fields.
+**Cloud API correlation**: These fields are **not exposed** by the FoxESS cloud API.
+The cloud returns S/T phase variables (`SVolt`, `SCurrent`, etc.) as zeros for single-phase inverters.
+The multiplexed block appears to be inverter-internal diagnostic data that the dongle transmits but the cloud backend ignores.
 
 ### 5.5 PV3/PV4 Phantom Voltage
 
 On inverters without PV strings connected to inputs 3 and 4, the PV3 voltage field (offset 48) intermittently shows small values (20–24V) with zero current.
 This is a phantom/floating voltage on the unconnected input and does not represent real power generation.
 PV4 remains consistently zero in this configuration.
+
+### 5.6 Cloud API Variable Coverage
+
+Of the 44 variables the FoxESS cloud API returns for this inverter:
+
+| Category | Count | Source |
+|----------|-------|--------|
+| Mapped to 0x02 payload offsets | 22 | Direct decode (offsets 0–71) |
+| Derived server-side | 6 | `pvPower`, `pv1Power`..`pv4Power`, `feedin` (calculated from V×A or cumulative) |
+| Zero (single-phase, no battery) | 14 | `SVolt`, `SCurrent`, `SFreq`, `SPower`, `TVolt`..`TPower`, `feedin2`, `gridConsumption2`, etc. |
+| Status/other | 2 | `runningState` (bitmask, not in 0x02 frame), `currentFault` (string) |
+
+The `runningState` variable (value 163 = 0xA3) is not present in the 0x02 data frame.
+It is likely extracted from the 0x06 (Device Registration) or 0x01 (Firmware Report) frames, or calculated server-side.
 
 **Derived values** (not transmitted, calculated from the above):
 - `pv1Power` = `pv1Volt × pv1Current ÷ 1000` (kW)
@@ -344,7 +361,7 @@ PV4 remains consistently zero in this configuration.
 
 ### 4.8 Device Registration — `0x06` (Client → Server)
 
-Sent every ~90 seconds as part of the repeating cycle (`0x02` → `0x06` → `0x01`).
+Sent as part of the repeating 3-message cycle (`0x02`, `0x06`, `0x01`).
 Contains the inverter device serial number.
 
 **Total frame size**: 99 bytes.
