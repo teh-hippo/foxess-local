@@ -55,13 +55,14 @@ May embed a control frame in its payload.
 | Timestamp | 4 | uint32 BE | Unix timestamp (seconds since epoch, UTC) for control frames and cmd `0x37`. For extended query/response pairs (`0x91`/`0x11`, `0x92`/`0x12`), this field is a **correlation ID** shared between request and response. |
 | Length | 2 | uint16 BE | Byte count of Payload (excludes header, checksum, and magic) |
 | Payload | var | varies | Command-specific data |
-| Checksum | 2 | CRC-16 | CRC-16/Modbus over `[Command .. Payload]`, stored **big-endian** (byte-swapped vs. standard Modbus wire order) |
+| Checksum | 2 | CRC-16 | CRC-16/Modbus over `[Command .. Payload]`, stored in **standard Modbus wire order** (low byte first, little-endian) |
 | Magic End | 2 | Fixed | `E7E7` for control frames, `F7F7` for extended frames |
 
 ### 2.4 Checksum Algorithm
 
 CRC-16/Modbus (polynomial 0xA001, init 0xFFFF) computed over all bytes between the start and end magic markers, excluding the checksum itself.
-The result is stored **big-endian** (high byte first), which is the reverse of standard Modbus wire order.
+The result is stored in **standard Modbus wire order** (low byte first, little-endian).
+Verified against 2015 frames across 5 capture sessions with 0 mismatches.
 
 ```python
 def checksum(data: bytes) -> bytes:
@@ -74,7 +75,7 @@ def checksum(data: bytes) -> bytes:
                 crc = (crc >> 1) ^ 0xA001
             else:
                 crc >>= 1
-    return bytes([(crc & 0xFF), (crc >> 8) & 0xFF])  # big-endian (swapped)
+    return bytes([(crc & 0xFF), (crc >> 8) & 0xFF])  # low byte first (standard Modbus)
 ```
 
 ### 2.5 Command Numbering Convention
@@ -90,6 +91,31 @@ def checksum(data: bytes) -> bytes:
 
 Server response commands for control frames mirror the client command with bit 7 set (`cmd | 0x80`): `0x2A→0xAA`, `0x2B→0xAB`, `0x2C→0xAC`.
 Extended frame responses (`0x11`, `0x12`) follow a separate numbering scheme, matching `0x91`/`0x92` respectively by clearing bit 7.
+
+### 2.6 Complete Message Type Inventory
+
+All message types observed across 2015 frames in 5 capture sessions:
+
+| Cmd | Magic | Dir | Size | Count | Name |
+|-----|-------|-----|------|-------|------|
+| `0x2A` | `7E7E` | c2s | 40B | 5 | Handshake |
+| `0xAA` | `7E7E` | s2c | 18B | 5 | Handshake ACK |
+| `0x2C` | `7E7E` | c2s | 17B | 5 | Auth Request |
+| `0xAC` | `7E7E` | s2c | 13B | 5 | Auth ACK |
+| `0x2B` | `7E7E` | c2s | 14B | 5 | Session Start |
+| `0xAB` | `7E7E` | s2c | 14B | 5 | Session ACK |
+| `0x02` | `7E7E` | c2s | 251B | 649 | Real-Time Data Report |
+| `0x06` | `7E7E` | c2s | 99B | 652 | Device Registration |
+| `0x01` | `7E7E` | c2s | 121B | 651 | Firmware Report |
+| `0x37` | `7F7F` | c2s | 277B | 9 | Extended Data |
+| `0x91` | `7F7F` | c2s | 72B | 7 | Extended Query |
+| `0x91` | `7F7F` | c2s | 24B | 1 | Extended Query (time sync variant) |
+| `0x11` | `7F7F` | s2c | 19B | 8 | Extended Query Response |
+| `0x92` | `7F7F` | c2s | 19B | 4 | Extended Client Message |
+| `0x12` | `7F7F` | s2c | 28B | 4 | Extended Response |
+
+All frame sizes are consistent (no variation per type except `0x91` which has two known sizes).
+CRC-16/Modbus verified on all 2015 frames with 0 mismatches.
 
 ## 3. Session Lifecycle
 
@@ -126,7 +152,7 @@ Datalogger                                Server
 | Event | Observed | Notes |
 |-------|----------|-------|
 | Connect | Around sunrise | Datalogger powers up when PV voltage exceeds ~80V. Varies with cloud cover. |
-| Data cycle | Every ~90s | 3 messages per cycle: 0x02 → 0x06 → 0x01 (strict order, 167/169 observed) |
+| Data cycle | Every ~90s | 3 messages per cycle: 0x02, 0x06, 0x01 (circular — starting point varies per session, all three rotations observed) |
 | Disconnect | Around sunset | PV voltage drops below ~80V. Last data frame sent, then TCP close. |
 | Session duration | Daylight hours | Matches daylight hours. Varies with season and weather. |
 
@@ -427,7 +453,7 @@ The `generationPower` field shows ~0.05–0.08 kW during this standby phase, whi
 | Metric | Value |
 |--------|-------|
 | Data frame interval | ~90 seconds (avg 90.5s, median 90.4s over 167 samples) |
-| Full cycle (0x02 → 0x06 → 0x01) | ~90 seconds (3 messages back-to-back, then ~60s pause) |
+| Full cycle (0x02, 0x06, 0x01) | ~90 seconds (3 messages back-to-back, then ~60s pause). Cycle order is circular; starting message varies per session. |
 | Bytes per data frame | 251 |
 | Daily upload volume | ~190 KB |
 | Daily download volume | ~485 KB |
