@@ -76,9 +76,16 @@ def _req(url: str, token: str, method: str = "GET", data: dict | None = None) ->
     req = urllib.request.Request(url, data=body, method=method)
     req.add_header("X-API-KEY", token)
     req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, context=_CTX) as resp:
-        raw = resp.read()
-        return json.loads(raw) if raw else None
+    try:
+        with urllib.request.urlopen(req, context=_CTX) as resp:
+            raw = resp.read()
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        print(f"  ! API error {e.code} {method} {url.split('/site/')[1] if '/site/' in url else url.split('/default/')[1] if '/default/' in url else url}", file=sys.stderr)
+        if body:
+            print(f"    {body[:200]}", file=sys.stderr)
+        raise
 
 
 def api_v1(cfg: Config, path: str, method: str = "GET", data: dict | None = None):
@@ -165,6 +172,7 @@ def cmd_setup(cfg: Config) -> bool:
             "dhcpd_start": _iot_dhcp_start(cfg.iot_subnet),
             "dhcpd_stop": _iot_dhcp_stop(cfg.iot_subnet),
             "internet_access_enabled": True,
+            "network_isolation_enabled": True,
             "is_nat": True,
             "enabled": True,
             "networkgroup": "LAN",
@@ -180,6 +188,10 @@ def cmd_setup(cfg: Config) -> bool:
     if wlan:
         print(f"  ✓ SSID '{cfg.iot_ssid_name}' exists (id={wlan['_id']})")
     else:
+        # Get AP group from existing WLAN
+        existing_wlans = api_v1(cfg, "rest/wlanconf")
+        ap_groups = existing_wlans[0].get("ap_group_ids", []) if existing_wlans else []
+
         print(f"  + Creating SSID '{cfg.iot_ssid_name}'...")
         wlan = api_v1(cfg, "rest/wlanconf", "POST", {
             "name": cfg.iot_ssid_name,
@@ -192,6 +204,7 @@ def cmd_setup(cfg: Config) -> bool:
             "l2_isolation": True,
             "wlan_band": "both",
             "ap_group_mode": "all",
+            "ap_group_ids": ap_groups,
             "setting_preference": "manual",
         })
         if isinstance(wlan, list):
@@ -217,14 +230,13 @@ def cmd_setup(cfg: Config) -> bool:
             "logging": False,
             "connection_state_type": "ALL",
             "connection_states": [],
-            "create_allow_respond": True,
             "match_ip_sec": False,
             "match_opposite_protocol": False,
             "icmp_typename": "ANY",
             "icmp_v6_typename": "ANY",
             "schedule": {"mode": "ALWAYS"},
         }
-        # Rule A: Allow IoT → relay
+        # Allow IoT → relay (exception to network isolation)
         api_v2(cfg, "firewall-policies", "POST", {
             **_fw_base,
             "name": "IoT: Allow Relay",
@@ -250,27 +262,8 @@ def cmd_setup(cfg: Config) -> bool:
         })
         print("    + Allow IoT → relay")
 
-        # Rule B: Block IoT → main LAN
-        api_v2(cfg, "firewall-policies", "POST", {
-            **_fw_base,
-            "name": "IoT: Block Main LAN",
-            "action": "BLOCK",
-            "protocol": "all",
-            "index": 2001,
-            "source": {
-                "zone_id": zone_id,
-                "matching_target": "ANY",
-                "port_matching_type": "ANY",
-                "match_opposite_ports": False,
-            },
-            "destination": {
-                "zone_id": default_zone,
-                "matching_target": "ANY",
-                "port_matching_type": "ANY",
-                "match_opposite_ports": False,
-            },
-        })
-        print("    + Block IoT → main LAN")
+        # Block is handled by network_isolation_enabled on the network.
+        # This is more reliable than custom same-zone firewall rules.
     else:
         print("  ! Could not determine zone IDs — create firewall rules manually")
         ok = False
@@ -294,9 +287,9 @@ def cmd_setup(cfg: Config) -> bool:
             "invert_address": False,
             "invert_port": False,
         }
-        # Use the IoT dongle IP if the device has already migrated, else current IP.
-        dongle = find_dongle(cfg)
-        dongle_ip = cfg.iot_dongle_ip if dongle and dongle.get("ip") == cfg.iot_dongle_ip else cfg.dongle_ip
+
+        # Use the IoT subnet for NAT source — works regardless of DHCP vs fixed IP.
+        iot_net = cfg.iot_subnet.rsplit(".", 1)[0] + ".0/24"
 
         api_v2(cfg, "nat", "POST", {
             "description": f"FoxESS Solar Relay ({TAG})",
@@ -305,7 +298,7 @@ def cmd_setup(cfg: Config) -> bool:
             "protocol": "tcp",
             "ip_version": "IPV4",
             "ip_address": cfg.relay_host,
-            "source_filter": {**_nat_filter, "address": dongle_ip},
+            "source_filter": {**_nat_filter, "address": iot_net},
             "destination_filter": {**_nat_filter, "port": cfg.upstream_port},
             "logging": False,
             "exclude": False,
@@ -315,23 +308,8 @@ def cmd_setup(cfg: Config) -> bool:
             "is_predefined": False,
         })
         print("    + DNAT")
-
-        api_v2(cfg, "nat", "POST", {
-            "description": f"FoxESS Solar Relay - Hairpin MASQ ({TAG})",
-            "type": "MASQUERADE",
-            "enabled": True,
-            "protocol": "tcp",
-            "ip_version": "IPV4",
-            "source_filter": {**_nat_filter, "address": dongle_ip},
-            "destination_filter": {**_nat_filter, "address": cfg.relay_host, "port": cfg.upstream_port},
-            "logging": False,
-            "exclude": False,
-            "pppoe_use_base_interface": False,
-            "rule_index": 1,
-            "setting_preference": "manual",
-            "is_predefined": False,
-        })
-        print("    + MASQUERADE")
+        # No MASQUERADE needed — cross-VLAN routing handles the return path.
+        # MASQUERADE was only needed for same-subnet hairpin NAT.
 
     return ok
 
@@ -405,7 +383,7 @@ def cmd_migrate(cfg: Config) -> None:
     print("  After migration, update the dongle's fixed IP:")
     print(f"    Current: {cfg.dongle_ip}")
     print(f"    Target:  {cfg.iot_dongle_ip}")
-    print("  Assign via UniFi UI: Clients → Solar Panel → Fixed IP → {cfg.iot_dongle_ip}")
+    print(f"  Assign via UniFi UI: Clients → Solar Panel → Fixed IP → {cfg.iot_dongle_ip}")
 
 
 # ---------------------------------------------------------------------------
