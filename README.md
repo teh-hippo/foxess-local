@@ -97,11 +97,8 @@ The isolation setup includes:
 - A dedicated VLAN with `network_isolation_enabled` (blocks all inter-VLAN traffic)
 - A firewall policy allowing only the relay port through (exception to isolation)
 - L2 client isolation on the WiFi SSID (prevents device-to-device at WiFi layer)
-- A router management block rule (prevents IoT devices from accessing the admin UI)
 
-> **Note:** The router management block requires an iptables rule via SSH because the UniFi API does not support custom LAN→Internal zone rules on Network 10.x.
-> This rule does not persist across router reboots.
-> Re-apply with: `ssh root@<router> iptables -t filter -I UBIOS_LAN_LOCAL_USER 1 -s <iot-subnet> -p tcp -m multiport --dports 22,80,443 -j DROP`
+All managed entirely through the UniFi API — no SSH required.
 
 This project includes a network isolation tool:
 
