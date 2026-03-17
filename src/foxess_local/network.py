@@ -4,10 +4,10 @@ Creates a dedicated VLAN + WiFi SSID so the dongle's leaked WiFi password
 only grants access to an isolated network, not the main LAN.
 
 Usage:
-    foxess-network setup      # Create network, SSID, firewall, NAT
-    foxess-network teardown   # Remove everything (reverse order)
+    foxess-network setup      # Create network, SSID, firewall, NAT (idempotent)
+    foxess-network teardown   # Remove everything (requires --yes)
     foxess-network status     # Read-only health check
-    foxess-network migrate    # Send netSet to dongle (needs AP connection)
+    foxess-network migrate    # Assign fixed IP after dongle joins IoT SSID
 """
 
 from __future__ import annotations
@@ -17,11 +17,13 @@ import json
 import os
 import ssl
 import sys
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-# Tag all managed resources for idempotent find-or-create.
-TAG = "foxess-local"
+DESCRIPTION_TAG = "foxess-local-managed"
+FW_RULE_NAME = "IoT: Allow Relay"
+DNAT_DESC = f"FoxESS Solar Relay ({DESCRIPTION_TAG})"
 
 
 @dataclass
@@ -29,7 +31,6 @@ class Config:
     unifi_url: str
     unifi_token: str
     relay_host: str
-    dongle_ip: str
     dongle_mac: str
     upstream_port: str
     iot_vlan_id: int
@@ -37,6 +38,22 @@ class Config:
     iot_ssid_name: str
     iot_ssid_password: str
     iot_dongle_ip: str
+
+    @property
+    def iot_network_cidr(self) -> str:
+        """Derive network CIDR from subnet (e.g. 192.168.3.1/24 → 192.168.3.0/24)."""
+        base = self.iot_subnet.split("/")[0].rsplit(".", 1)[0]
+        return f"{base}.0/24"
+
+    @property
+    def iot_dhcp_start(self) -> str:
+        base = self.iot_subnet.split("/")[0].rsplit(".", 1)[0]
+        return f"{base}.100"
+
+    @property
+    def iot_dhcp_stop(self) -> str:
+        base = self.iot_subnet.split("/")[0].rsplit(".", 1)[0]
+        return f"{base}.254"
 
     @classmethod
     def from_env(cls) -> Config:
@@ -51,7 +68,6 @@ class Config:
             unifi_url=req("UNIFI_URL"),
             unifi_token=req("UNIFI_TOKEN"),
             relay_host=req("FOXESS_RELAY_HOST"),
-            dongle_ip=req("FOXESS_DONGLE_IP"),
             dongle_mac=os.environ.get("FOXESS_DONGLE_MAC", "your-dongle-mac-address"),
             upstream_port=os.environ.get("FOXESS_UPSTREAM_PORT", "14431"),
             iot_vlan_id=int(os.environ.get("IOT_VLAN_ID", "3")),
@@ -63,7 +79,7 @@ class Config:
 
 
 # ---------------------------------------------------------------------------
-# UniFi HTTP helpers
+# UniFi API
 # ---------------------------------------------------------------------------
 
 _CTX = ssl.create_default_context()
@@ -81,87 +97,90 @@ def _req(url: str, token: str, method: str = "GET", data: dict | None = None) ->
             raw = resp.read()
             return json.loads(raw) if raw else None
     except urllib.error.HTTPError as e:
-        body = e.read().decode(errors="replace")
-        print(f"  ! API error {e.code} {method} {url.split('/site/')[1] if '/site/' in url else url.split('/default/')[1] if '/default/' in url else url}", file=sys.stderr)
-        if body:
-            print(f"    {body[:200]}", file=sys.stderr)
+        err_body = e.read().decode(errors="replace")
+        short_path = url.split("/default/")[-1] if "/default/" in url else url
+        print(f"  ! API {e.code} {method} {short_path}", file=sys.stderr)
+        if err_body:
+            print(f"    {err_body[:200]}", file=sys.stderr)
         raise
 
 
-def api_v1(cfg: Config, path: str, method: str = "GET", data: dict | None = None):
-    """Call the v1 REST API (networkconf, wlanconf, stat)."""
-    url = f"{cfg.unifi_url}/proxy/network/api/s/default/{path}"
-    result = _req(url, cfg.unifi_token, method, data)
-    if isinstance(result, dict):
-        return result.get("data", result)
-    return result
+def _v1(cfg: Config, path: str, method: str = "GET", data: dict | None = None):
+    """v1 REST API — returns the 'data' array from the response."""
+    result = _req(f"{cfg.unifi_url}/proxy/network/api/s/default/{path}", cfg.unifi_token, method, data)
+    return result.get("data", result) if isinstance(result, dict) else result
 
 
-def api_v2(cfg: Config, path: str, method: str = "GET", data: dict | None = None):
-    """Call the v2 API (nat, firewall-policies)."""
-    url = f"{cfg.unifi_url}/proxy/network/v2/api/site/default/{path}"
-    return _req(url, cfg.unifi_token, method, data)
+def _v2(cfg: Config, path: str, method: str = "GET", data: dict | None = None):
+    """v2 API — returns the raw response (usually a list or dict)."""
+    return _req(f"{cfg.unifi_url}/proxy/network/v2/api/site/default/{path}", cfg.unifi_token, method, data)
 
 
 # ---------------------------------------------------------------------------
-# Find helpers
+# Finders — locate managed resources by specific identifiers
 # ---------------------------------------------------------------------------
 
-def find_network(cfg: Config) -> dict | None:
-    for n in api_v1(cfg, "rest/networkconf"):
+def _find_network(cfg: Config) -> dict | None:
+    for n in _v1(cfg, "rest/networkconf"):
         if n.get("vlan") == cfg.iot_vlan_id and n.get("vlan_enabled"):
             return n
     return None
 
 
-def find_wlan(cfg: Config) -> dict | None:
-    for w in api_v1(cfg, "rest/wlanconf"):
+def _find_wlan(cfg: Config) -> dict | None:
+    for w in _v1(cfg, "rest/wlanconf"):
         if w.get("name") == cfg.iot_ssid_name:
             return w
     return None
 
 
-def find_fw_rules(cfg: Config) -> list[dict]:
-    return [r for r in (api_v2(cfg, "firewall-policies") or [])
-            if r.get("name", "").startswith("IoT:") and not r.get("predefined")]
+def _find_fw_allow_rule(cfg: Config) -> dict | None:
+    """Find our specific allow-relay firewall policy (not the auto-generated respond rule)."""
+    for r in (_v2(cfg, "firewall-policies") or []):
+        if r.get("name") == FW_RULE_NAME and not r.get("predefined"):
+            return r
+    return None
 
 
-def find_nat_rules(cfg: Config) -> list[dict]:
-    return [r for r in (api_v2(cfg, "nat") or [])
-            if TAG in r.get("description", "").lower() or "foxess" in r.get("description", "").lower()]
+def _find_dnat_rule(cfg: Config) -> dict | None:
+    for r in (_v2(cfg, "nat") or []):
+        if DESCRIPTION_TAG in r.get("description", "") and r.get("type") == "DNAT":
+            return r
+    return None
 
 
-def find_dongle(cfg: Config) -> dict | None:
-    for c in api_v1(cfg, "stat/sta"):
+def _find_all_managed_nat(cfg: Config) -> list[dict]:
+    return [r for r in (_v2(cfg, "nat") or []) if DESCRIPTION_TAG in r.get("description", "")]
+
+
+def _find_dongle(cfg: Config) -> dict | None:
+    for c in _v1(cfg, "stat/sta"):
         if c.get("mac") == cfg.dongle_mac:
             return c
     return None
 
 
+def _find_default_zone(cfg: Config) -> str | None:
+    for n in _v1(cfg, "rest/networkconf"):
+        if n.get("name") == "Default":
+            return n.get("firewall_zone_id")
+    return None
+
+
 # ---------------------------------------------------------------------------
-# Setup
+# Setup (idempotent)
 # ---------------------------------------------------------------------------
-
-def _iot_dhcp_start(subnet: str) -> str:
-    base = subnet.split("/")[0].rsplit(".", 1)[0]
-    return f"{base}.100"
-
-
-def _iot_dhcp_stop(subnet: str) -> str:
-    base = subnet.split("/")[0].rsplit(".", 1)[0]
-    return f"{base}.254"
-
 
 def cmd_setup(cfg: Config) -> bool:
     ok = True
 
     # 1. Network
-    net = find_network(cfg)
+    net = _find_network(cfg)
     if net:
-        print(f"  ✓ Network '{net['name']}' exists (vlan={cfg.iot_vlan_id}, id={net['_id']})")
+        print(f"  ✓ Network '{net['name']}' (vlan={cfg.iot_vlan_id})")
     else:
         print(f"  + Creating VLAN {cfg.iot_vlan_id} network...")
-        net = api_v1(cfg, "rest/networkconf", "POST", {
+        result = _v1(cfg, "rest/networkconf", "POST", {
             "name": "IoT",
             "purpose": "corporate",
             "setting_preference": "manual",
@@ -169,31 +188,28 @@ def cmd_setup(cfg: Config) -> bool:
             "vlan": cfg.iot_vlan_id,
             "ip_subnet": cfg.iot_subnet,
             "dhcpd_enabled": True,
-            "dhcpd_start": _iot_dhcp_start(cfg.iot_subnet),
-            "dhcpd_stop": _iot_dhcp_stop(cfg.iot_subnet),
+            "dhcpd_start": cfg.iot_dhcp_start,
+            "dhcpd_stop": cfg.iot_dhcp_stop,
             "internet_access_enabled": True,
             "network_isolation_enabled": True,
             "is_nat": True,
             "enabled": True,
             "networkgroup": "LAN",
         })
-        if isinstance(net, list):
-            net = net[0]
-        print(f"    id={net['_id']}, zone={net.get('firewall_zone_id', '?')}")
+        net = result[0] if isinstance(result, list) else result
+        print(f"    ✓ Created (id={net['_id']})")
     net_id = net["_id"]
     zone_id = net.get("firewall_zone_id")
 
-    # 2. WLAN
-    wlan = find_wlan(cfg)
+    # 2. WLAN (2.4GHz only — dongle is ESP32)
+    wlan = _find_wlan(cfg)
     if wlan:
-        print(f"  ✓ SSID '{cfg.iot_ssid_name}' exists (id={wlan['_id']})")
+        print(f"  ✓ SSID '{cfg.iot_ssid_name}'")
     else:
-        # Get AP group from existing WLAN
-        existing_wlans = api_v1(cfg, "rest/wlanconf")
+        existing_wlans = _v1(cfg, "rest/wlanconf")
         ap_groups = existing_wlans[0].get("ap_group_ids", []) if existing_wlans else []
-
         print(f"  + Creating SSID '{cfg.iot_ssid_name}'...")
-        wlan = api_v1(cfg, "rest/wlanconf", "POST", {
+        result = _v1(cfg, "rest/wlanconf", "POST", {
             "name": cfg.iot_ssid_name,
             "security": "wpapsk",
             "wpa_mode": "wpa2",
@@ -202,31 +218,28 @@ def cmd_setup(cfg: Config) -> bool:
             "networkconf_id": net_id,
             "enabled": True,
             "l2_isolation": True,
-            "wlan_band": "both",
+            "wlan_band": "2g",
             "ap_group_mode": "all",
             "ap_group_ids": ap_groups,
             "setting_preference": "manual",
         })
-        if isinstance(wlan, list):
-            wlan = wlan[0]
-        print(f"    id={wlan['_id']}")
+        wlan = result[0] if isinstance(result, list) else result
+        print(f"    ✓ Created (id={wlan['_id']})")
 
-    # 3. Firewall rules
-    # Find the Default LAN zone from existing networks.
-    default_zone = None
-    for n in api_v1(cfg, "rest/networkconf"):
-        if n.get("name") == "Default":
-            default_zone = n.get("firewall_zone_id")
-            break
-
-    existing_fw = find_fw_rules(cfg)
-    if existing_fw:
-        print(f"  ✓ Firewall rules exist ({len(existing_fw)} rules)")
+    # 3. Firewall — allow relay through network isolation
+    fw = _find_fw_allow_rule(cfg)
+    default_zone = _find_default_zone(cfg)
+    if fw:
+        print(f"  ✓ Firewall allow-relay rule")
     elif zone_id and default_zone:
-        print("  + Creating firewall rules...")
-        _fw_base = {
+        print("  + Creating firewall allow-relay rule...")
+        _v2(cfg, "firewall-policies", "POST", {
+            "name": FW_RULE_NAME,
             "enabled": True,
+            "action": "ALLOW",
+            "protocol": "tcp",
             "ip_version": "IPV4",
+            "index": 2000,
             "logging": False,
             "connection_state_type": "ALL",
             "connection_states": [],
@@ -235,14 +248,6 @@ def cmd_setup(cfg: Config) -> bool:
             "icmp_typename": "ANY",
             "icmp_v6_typename": "ANY",
             "schedule": {"mode": "ALWAYS"},
-        }
-        # Allow IoT → relay (exception to network isolation)
-        api_v2(cfg, "firewall-policies", "POST", {
-            **_fw_base,
-            "name": "IoT: Allow Relay",
-            "action": "ALLOW",
-            "protocol": "tcp",
-            "index": 2000,
             "source": {
                 "zone_id": zone_id,
                 "matching_target": "ANY",
@@ -260,46 +265,33 @@ def cmd_setup(cfg: Config) -> bool:
                 "match_opposite_ports": False,
             },
         })
-        print("    + Allow IoT → relay")
-
-        # Block is handled by network_isolation_enabled on the network.
-        # This is more reliable than custom same-zone firewall rules.
+        print("    ✓ Created")
     else:
-        print("  ! Could not determine zone IDs — create firewall rules manually")
+        print("  ! Could not determine zone IDs — create firewall rule manually")
         ok = False
 
-    # 4. NAT rules
-    existing_nat = find_nat_rules(cfg)
-    if existing_nat:
-        print(f"  ✓ NAT rules exist ({len(existing_nat)} rules)")
-        # Check if in_interface needs updating (remove it for VLAN-agnostic matching).
-        for r in existing_nat:
-            if r.get("type") == "DNAT" and r.get("in_interface"):
-                print("    ~ Removing in_interface from DNAT rule...")
-                updated = {k: v for k, v in r.items() if k not in ("_id", "in_interface")}
-                api_v2(cfg, f"nat/{r['_id']}", "PUT", updated)
-                print("    ✓ DNAT rule updated (VLAN-agnostic)")
+    # 4. DNAT — redirect dongle traffic to relay (no MASQUERADE needed cross-VLAN)
+    dnat = _find_dnat_rule(cfg)
+    if dnat:
+        src = dnat.get("source_filter", {}).get("address", "?")
+        print(f"  ✓ DNAT rule (src={src})")
+        if dnat.get("in_interface"):
+            updated = {k: v for k, v in dnat.items() if k not in ("_id", "in_interface")}
+            _v2(cfg, f"nat/{dnat['_id']}", "PUT", updated)
+            print("    ~ Removed in_interface (now VLAN-agnostic)")
     else:
-        print("  + Creating NAT rules...")
-        _nat_filter = {
-            "filter_type": "ADDRESS_AND_PORT",
-            "firewall_group_ids": [],
-            "invert_address": False,
-            "invert_port": False,
-        }
-
-        # Use the IoT subnet for NAT source — works regardless of DHCP vs fixed IP.
-        iot_net = cfg.iot_subnet.rsplit(".", 1)[0] + ".0/24"
-
-        api_v2(cfg, "nat", "POST", {
-            "description": f"FoxESS Solar Relay ({TAG})",
+        print("  + Creating DNAT rule...")
+        _filter = {"filter_type": "ADDRESS_AND_PORT", "firewall_group_ids": [],
+                    "invert_address": False, "invert_port": False}
+        _v2(cfg, "nat", "POST", {
+            "description": DNAT_DESC,
             "type": "DNAT",
             "enabled": True,
             "protocol": "tcp",
             "ip_version": "IPV4",
             "ip_address": cfg.relay_host,
-            "source_filter": {**_nat_filter, "address": iot_net},
-            "destination_filter": {**_nat_filter, "port": cfg.upstream_port},
+            "source_filter": {**_filter, "address": cfg.iot_network_cidr},
+            "destination_filter": {**_filter, "port": cfg.upstream_port},
             "logging": False,
             "exclude": False,
             "pppoe_use_base_interface": False,
@@ -307,9 +299,7 @@ def cmd_setup(cfg: Config) -> bool:
             "setting_preference": "manual",
             "is_predefined": False,
         })
-        print("    + DNAT")
-        # No MASQUERADE needed — cross-VLAN routing handles the return path.
-        # MASQUERADE was only needed for same-subnet hairpin NAT.
+        print("    ✓ Created")
 
     return ok
 
@@ -318,25 +308,47 @@ def cmd_setup(cfg: Config) -> bool:
 # Teardown
 # ---------------------------------------------------------------------------
 
-def cmd_teardown(cfg: Config) -> None:
-    # Reverse order: NAT → firewall → WLAN → network
-    for r in find_nat_rules(cfg):
-        print(f"  - NAT: {r['description']} ({r['_id']})")
-        api_v2(cfg, f"nat/{r['_id']}", "DELETE")
+def cmd_teardown(cfg: Config, force: bool = False) -> None:
+    nat = _find_all_managed_nat(cfg)
+    fw = _find_fw_allow_rule(cfg)
+    wlan = _find_wlan(cfg)
+    net = _find_network(cfg)
 
-    for r in find_fw_rules(cfg):
-        print(f"  - Firewall: {r['name']} ({r['_id']})")
-        api_v2(cfg, f"firewall-policies/{r['_id']}", "DELETE")
-
-    wlan = find_wlan(cfg)
+    items = []
+    if nat:
+        items += [f"NAT: {r['description']}" for r in nat]
+    if fw:
+        items.append(f"Firewall: {fw['name']}")
     if wlan:
-        print(f"  - WLAN: {wlan['name']} ({wlan['_id']})")
-        api_v1(cfg, f"rest/wlanconf/{wlan['_id']}", "DELETE")
-
-    net = find_network(cfg)
+        items.append(f"WLAN: {wlan['name']}")
     if net:
-        print(f"  - Network: {net['name']} ({net['_id']})")
-        api_v1(cfg, f"rest/networkconf/{net['_id']}", "DELETE")
+        items.append(f"Network: {net['name']}")
+
+    if not items:
+        print("  Nothing to remove.")
+        return
+
+    print("  Will remove:")
+    for item in items:
+        print(f"    - {item}")
+
+    if not force:
+        print("\n  Pass --yes to confirm teardown.")
+        return
+
+    for r in nat:
+        _v2(cfg, f"nat/{r['_id']}", "DELETE")
+        print(f"  - {r['description']}")
+    if fw:
+        _v2(cfg, f"firewall-policies/{fw['_id']}", "DELETE")
+        print(f"  - {fw['name']}")
+    if wlan:
+        _v1(cfg, f"rest/wlanconf/{wlan['_id']}", "DELETE")
+        print(f"  - {wlan['name']}")
+    if net:
+        _v1(cfg, f"rest/networkconf/{net['_id']}", "DELETE")
+        print(f"  - {net['name']}")
+    print("  ✓ Teardown complete")
 
 
 # ---------------------------------------------------------------------------
@@ -344,46 +356,81 @@ def cmd_teardown(cfg: Config) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_status(cfg: Config) -> None:
-    net = find_network(cfg)
-    print(f"  Network:  {'✓ ' + net['name'] + ' (id=' + net['_id'] + ')' if net else '✗ not found'}")
+    net = _find_network(cfg)
+    if net:
+        isolated = net.get("network_isolation_enabled", False)
+        tag = "✓" if isolated else "⚠ isolation OFF"
+        print(f"  Network:  {tag} {net['name']} (vlan={cfg.iot_vlan_id}, isolated={isolated})")
+    else:
+        print("  Network:  ✗ not found")
 
-    wlan = find_wlan(cfg)
-    print(f"  SSID:     {'✓ ' + wlan['name'] if wlan else '✗ not found'}")
+    wlan = _find_wlan(cfg)
+    if wlan:
+        l2 = wlan.get("l2_isolation", False)
+        band = wlan.get("wlan_band", "?")
+        tag = "✓" if l2 else "⚠ l2_isolation OFF"
+        print(f"  SSID:     {tag} {wlan['name']} (band={band}, l2_isolation={l2})")
+    else:
+        print("  SSID:     ✗ not found")
 
-    fw = find_fw_rules(cfg)
-    print(f"  Firewall: {'✓ ' + str(len(fw)) + ' rules' if fw else '✗ no rules'}")
+    fw = _find_fw_allow_rule(cfg)
+    print(f"  Firewall: {'✓ allow-relay rule' if fw else '✗ no allow-relay rule'}")
 
-    nat = find_nat_rules(cfg)
-    print(f"  NAT:      {'✓ ' + str(len(nat)) + ' rules' if nat else '✗ no rules'}")
-    for r in nat:
-        src = r.get("source_filter", {}).get("address", "?")
-        iface = r.get("in_interface", "none")
-        print(f"            {r['type']}: src={src}, in_interface={iface}")
+    dnat = _find_dnat_rule(cfg)
+    if dnat:
+        src = dnat.get("source_filter", {}).get("address", "?")
+        iface = dnat.get("in_interface")
+        warn = " ⚠ has in_interface" if iface else ""
+        print(f"  DNAT:     ✓ src={src}{warn}")
+    else:
+        print("  DNAT:     ✗ not found")
 
-    dongle = find_dongle(cfg)
+    dongle = _find_dongle(cfg)
     if dongle:
-        print(f"  Dongle:   ✓ ip={dongle['ip']}, network={dongle.get('network', '?')}, essid={dongle.get('essid', '?')}")
+        ip = dongle.get("ip", "?")
+        net_name = dongle.get("network", "?")
+        ssid = dongle.get("essid", "?")
+        on_iot = cfg.iot_ssid_name in str(ssid)
+        tag = "✓" if on_iot else "⚠ not on IoT"
+        print(f"  Dongle:   {tag} ip={ip}, network={net_name}, essid={ssid}")
     else:
         print("  Dongle:   ✗ not connected")
 
 
 # ---------------------------------------------------------------------------
-# Migrate
+# Migrate — assign fixed IP after dongle has joined IoT SSID
 # ---------------------------------------------------------------------------
 
 def cmd_migrate(cfg: Config) -> None:
-    print("  To migrate the dongle to the IoT network:")
-    print(f"  1. Connect to the dongle's WiFi AP (W-XXXXXXX / mtmt2020)")
-    print(f"  2. Open a WebSocket to ws://192.168.1.1/")
-    print(f"  3. Wait for the netInit response")
-    print(f'  4. Send: {{"fun": "netSet", "ssid": "{cfg.iot_ssid_name}", "password": "{cfg.iot_ssid_password}"}}')
-    print(f"  5. Dongle reboots (~60s), joins '{cfg.iot_ssid_name}'")
-    print(f"  6. Run 'foxess-network status' to verify")
-    print()
-    print("  After migration, update the dongle's fixed IP:")
-    print(f"    Current: {cfg.dongle_ip}")
-    print(f"    Target:  {cfg.iot_dongle_ip}")
-    print(f"  Assign via UniFi UI: Clients → Solar Panel → Fixed IP → {cfg.iot_dongle_ip}")
+    dongle = _find_dongle(cfg)
+    if not dongle:
+        print("  ✗ Dongle not connected. Connect it to the IoT SSID first:")
+        print(f"    1. Join dongle AP (W-XXXXXXX / mtmt2020)")
+        print(f"    2. Open http://192.168.1.1/")
+        print(f'    3. Set WiFi to "{cfg.iot_ssid_name}" with the configured password')
+        print(f"    4. Dongle reboots (~60s), then re-run this command")
+        return
+
+    ssid = dongle.get("essid", "")
+    if cfg.iot_ssid_name not in ssid:
+        print(f"  ⚠ Dongle is on '{ssid}', not '{cfg.iot_ssid_name}'")
+        print(f"    Reconfigure via dongle AP → http://192.168.1.1/")
+        return
+
+    current_ip = dongle.get("ip", "?")
+    client_id = dongle["_id"]
+    net = _find_network(cfg)
+
+    if current_ip == cfg.iot_dongle_ip:
+        print(f"  ✓ Dongle already at fixed IP {cfg.iot_dongle_ip}")
+    else:
+        print(f"  Dongle at {current_ip} (DHCP), assigning fixed IP {cfg.iot_dongle_ip}...")
+        _v1(cfg, f"rest/user/{client_id}", "PUT", {
+            "use_fixedip": True,
+            "fixed_ip": cfg.iot_dongle_ip,
+            "network_id": net["_id"] if net else "",
+        })
+        print(f"  ✓ Fixed IP assigned. Takes effect on next DHCP renewal.")
 
 
 # ---------------------------------------------------------------------------
@@ -396,19 +443,21 @@ def main() -> None:
         description="Manage IoT network isolation for the FoxESS datalogger.",
     )
     parser.add_argument("command", choices=["setup", "teardown", "status", "migrate"])
+    parser.add_argument("--yes", action="store_true", help="Confirm destructive operations")
     args = parser.parse_args()
 
     cfg = Config.from_env()
     print(f"foxess-network {args.command}")
 
-    if args.command == "setup":
-        cmd_setup(cfg)
-    elif args.command == "teardown":
-        cmd_teardown(cfg)
-    elif args.command == "status":
-        cmd_status(cfg)
-    elif args.command == "migrate":
-        cmd_migrate(cfg)
+    match args.command:
+        case "setup":
+            cmd_setup(cfg)
+        case "teardown":
+            cmd_teardown(cfg, force=args.yes)
+        case "status":
+            cmd_status(cfg)
+        case "migrate":
+            cmd_migrate(cfg)
 
 
 if __name__ == "__main__":
