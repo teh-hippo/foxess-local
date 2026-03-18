@@ -26,7 +26,8 @@ def decode_data_frame(raw: bytes, timestamp: str) -> SolarReading | None:
         return None
 
     inner = raw[9:-4]  # strip header (9 bytes) and trailer (crc + end magic)
-    if len(inner) < 170:
+    # Inner payload is 238 bytes for a 251-byte frame. Check conservatively.
+    if len(inner) < 72:  # highest accessed offset: u32 at 68 = 4 bytes
         return None
 
     grid_raw = _i16(inner, 2)

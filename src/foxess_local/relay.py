@@ -37,7 +37,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("foxess.relay")
 
-# Single-threaded executor serialises all DB writes (SQLite is not thread-safe for concurrent writes)
+# Single-threaded executor serialises all DB writes.
+# The _db connection is only accessed from this one executor thread.
 _db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="db")
 _db = None
 

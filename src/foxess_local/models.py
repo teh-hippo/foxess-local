@@ -70,5 +70,7 @@ class SolarReading:
         d = self.__dict__.copy()
         d["pv1_power_kw"] = self.pv1_power_kw
         d["pv2_power_kw"] = self.pv2_power_kw
+        d["pv3_power_kw"] = self.pv3_power_kw
+        d["pv4_power_kw"] = self.pv4_power_kw
         d["pv_power_kw"] = self.pv_power_kw
         return d

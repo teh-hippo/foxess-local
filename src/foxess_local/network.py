@@ -418,7 +418,8 @@ def main() -> None:
 
     match args.command:
         case "setup":
-            cmd_setup(cfg)
+            if not cmd_setup(cfg):
+                sys.exit(1)
         case "teardown":
             cmd_teardown(cfg, force=args.yes)
         case "status":
