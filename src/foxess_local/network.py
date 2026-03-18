@@ -68,7 +68,7 @@ class Config:
             unifi_url=req("UNIFI_URL"),
             unifi_token=req("UNIFI_TOKEN"),
             relay_host=req("FOXESS_RELAY_HOST"),
-            dongle_mac=os.environ.get("FOXESS_DONGLE_MAC", "your-dongle-mac-address"),
+            dongle_mac=req("FOXESS_DONGLE_MAC"),
             upstream_port=os.environ.get("FOXESS_UPSTREAM_PORT", "14431"),
             iot_vlan_id=int(os.environ.get("IOT_VLAN_ID", "3")),
             iot_subnet=os.environ.get("IOT_SUBNET", "192.168.3.1/24"),
