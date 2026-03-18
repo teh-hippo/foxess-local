@@ -140,11 +140,11 @@ uv run foxess-live
 
 | Command | Description |
 |---------|-------------|
-| `uv run foxess-relay` | Start the TLS relay (captures to `captures/`) |
+| `uv run foxess-relay` | Start the TLS relay (stores frames + decoded readings in `data/foxess.db`) |
 | `uv run foxess-live` | Live dashboard — updates every ~90s |
 | `uv run foxess-live --once` | Print latest reading and exit |
-| `uv run foxess-decode captures/` | Decode all captured data frames |
-| `uv run foxess-decode captures/ --latest --json` | Latest reading as JSON |
+| `uv run foxess-decode` | Show recent decoded readings from database |
+| `uv run foxess-decode --latest --json` | Latest reading as JSON |
 | `uv run foxess-network setup` | Create isolated IoT network + NAT rules |
 | `uv run foxess-network status` | Check network isolation status |
 | `uv run foxess-network teardown` | Remove all managed network rules |
@@ -155,7 +155,7 @@ The dongle connects to a hardcoded IP (not hostname) on port 14431.
 To intercept:
 
 1. **DNAT rule**: redirect the dongle's outbound traffic to the relay host
-2. **MASQUERADE rule**: hairpin NAT for same-subnet or cross-VLAN redirect
+2. **MASQUERADE rule**: needed for same-subnet hairpin NAT (not needed with VLAN isolation)
 
 The `foxess-network` tool manages these via the **UniFi Network API** (persistent, no SSH required).
 It also creates an isolated VLAN network, dedicated WiFi SSID, and firewall rules.

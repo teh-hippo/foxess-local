@@ -5,13 +5,13 @@ Framing: 7e7e (start) / e7e7 (end) for control, 7f7f / f7f7 for data.
 Byte order: big-endian. Values are signed int16 unless noted.
 
 Usage:
-    uv run foxess-decode captures/capture_*.jsonl
-    uv run foxess-decode --latest captures/
+    uv run foxess-decode              # decode recent readings from database
+    uv run foxess-decode --latest     # show only the most recent reading
+    uv run foxess-decode --json       # output as JSON
 """
 
 import argparse
 import json
-import pathlib
 import sys
 from dataclasses import dataclass
 
@@ -159,63 +159,57 @@ def decode_data_frame(raw: bytes, timestamp: str) -> SolarReading | None:
     )
 
 
-def decode_capture_file(path: pathlib.Path) -> list[SolarReading]:
-    """Read a JSON-lines capture file and decode all data frames."""
-    readings = []
-    with open(path) as f:
-        for line in f:
-            record = json.loads(line)
-            if record["dir"] != "c2s" or record["len"] != 251:
-                continue
-            raw = bytes.fromhex(record["hex"])
-            reading = decode_data_frame(raw, record["ts"])
-            if reading:
-                readings.append(reading)
-    return readings
+def _format_reading(r: SolarReading) -> str:
+    lines = [
+        f"--- {r.timestamp} ---",
+        f"  Generation: {r.generation_power_kw:.3f} kW  |  Feed-in: {r.feedin_power_kw:.3f} kW  |  Load: {r.load_power_kw:.3f} kW",
+        f"  Grid: {r.r_volt:.1f}V  {r.r_current:.1f}A  {r.r_freq:.2f}Hz  {r.r_power_kw:.3f}kW",
+        f"  PV1: {r.pv1_volt:.1f}V {r.pv1_current:.1f}A = {r.pv1_power_kw:.3f}kW  |  PV2: {r.pv2_volt:.1f}V {r.pv2_current:.1f}A = {r.pv2_power_kw:.3f}kW",
+    ]
+    if r.pv3_volt > 0 or r.pv4_volt > 0:
+        lines.append(f"  PV3: {r.pv3_volt:.1f}V {r.pv3_current:.1f}A  |  PV4: {r.pv4_volt:.1f}V {r.pv4_current:.1f}A")
+    lines += [
+        f"  Temp: ambient={r.ambient_temp_c}°C  boost={r.boost_temp_c}°C  inv={r.inv_temp_c}°C",
+        f"  Today: {r.today_yield_kwh:.1f} kWh  |  Lifetime: {r.generation_total_kwh:.1f} kWh",
+    ]
+    return "\n".join(lines)
+
+
+def _reading_to_json(r: SolarReading) -> str:
+    d = r.__dict__.copy()
+    d["pv1_power_kw"] = r.pv1_power_kw
+    d["pv2_power_kw"] = r.pv2_power_kw
+    d["pv_power_kw"] = r.pv_power_kw
+    return json.dumps(d)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Decode FoxESS capture files")
-    parser.add_argument("paths", nargs="+", help="Capture .jsonl files or directory")
+    from foxess_local.store import open_db, get_latest_reading, query_readings
+
+    parser = argparse.ArgumentParser(description="Decode FoxESS readings")
     parser.add_argument("--latest", action="store_true", help="Show only the latest reading")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument("--limit", type=int, default=20, help="Number of readings to show")
+    parser.add_argument("--db", type=str, help="Database path")
     args = parser.parse_args()
 
-    files: list[pathlib.Path] = []
-    for p in args.paths:
-        path = pathlib.Path(p)
-        if path.is_dir():
-            files.extend(sorted(path.glob("capture_*.jsonl")))
-        else:
-            files.append(path)
-
-    all_readings: list[SolarReading] = []
-    for f in sorted(files):
-        all_readings.extend(decode_capture_file(f))
-
-    if not all_readings:
-        print("No data frames found.", file=sys.stderr)
-        sys.exit(1)
+    conn = open_db(args.db)
 
     if args.latest:
-        all_readings = [all_readings[-1]]
+        reading = get_latest_reading(conn)
+        if not reading:
+            print("No readings in database.", file=sys.stderr)
+            sys.exit(1)
+        print(_reading_to_json(reading) if args.json else _format_reading(reading))
+    else:
+        readings = query_readings(conn, limit=args.limit)
+        if not readings:
+            print("No readings in database.", file=sys.stderr)
+            sys.exit(1)
+        for r in readings:
+            print(_reading_to_json(r) if args.json else _format_reading(r))
 
-    for r in all_readings:
-        if args.json:
-            d = r.__dict__.copy()
-            d["pv1_power_kw"] = r.pv1_power_kw
-            d["pv2_power_kw"] = r.pv2_power_kw
-            d["pv_power_kw"] = r.pv_power_kw
-            print(json.dumps(d))
-        else:
-            print(f"--- {r.timestamp} ---")
-            print(f"  Generation: {r.generation_power_kw:.3f} kW  |  Feed-in: {r.feedin_power_kw:.3f} kW  |  Load: {r.load_power_kw:.3f} kW")
-            print(f"  Grid: {r.r_volt:.1f}V  {r.r_current:.1f}A  {r.r_freq:.2f}Hz  {r.r_power_kw:.3f}kW")
-            print(f"  PV1: {r.pv1_volt:.1f}V {r.pv1_current:.1f}A = {r.pv1_power_kw:.3f}kW  |  PV2: {r.pv2_volt:.1f}V {r.pv2_current:.1f}A = {r.pv2_power_kw:.3f}kW")
-            if r.pv3_volt > 0 or r.pv4_volt > 0:
-                print(f"  PV3: {r.pv3_volt:.1f}V {r.pv3_current:.1f}A  |  PV4: {r.pv4_volt:.1f}V {r.pv4_current:.1f}A")
-            print(f"  Temp: ambient={r.ambient_temp_c}°C  boost={r.boost_temp_c}°C  inv={r.inv_temp_c}°C")
-            print(f"  Today: {r.today_yield_kwh:.1f} kWh  |  Lifetime: {r.generation_total_kwh:.1f} kWh")
+    conn.close()
 
 
 if __name__ == "__main__":

@@ -1,20 +1,16 @@
 """Live stats — watch decoded solar readings as they arrive.
 
 Usage:
-    uv run foxess-live           # follow latest capture file
+    uv run foxess-live           # follow latest readings from database
     uv run foxess-live --once    # print latest reading and exit
 """
 
 import argparse
-import json
-import pathlib
 import sys
 import time
 
-from foxess_local.decode import decode_data_frame, SolarReading
-
-
-CAPTURE_DIR = pathlib.Path(__file__).parent.parent.parent / "captures"
+from foxess_local.decode import SolarReading
+from foxess_local.store import open_db, get_latest_reading
 
 
 def format_reading(r: SolarReading) -> str:
@@ -67,87 +63,39 @@ def format_reading(r: SolarReading) -> str:
     return "\n".join(lines)
 
 
-def get_latest_capture_file() -> pathlib.Path | None:
-    files = sorted(CAPTURE_DIR.glob("capture_*.jsonl"))
-    return files[-1] if files else None
-
-
-def tail_readings(path: pathlib.Path):
-    """Follow a capture file and yield new SolarReadings as they appear."""
-    with open(path) as f:
-        # Seek to end
-        f.seek(0, 2)
-        while True:
-            line = f.readline()
-            if not line:
-                time.sleep(1)
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if record["dir"] != "c2s" or record["len"] != 251:
-                continue
-            raw = bytes.fromhex(record["hex"])
-            reading = decode_data_frame(raw, record["ts"])
-            if reading:
-                yield reading
-
-
-def get_latest_reading(path: pathlib.Path) -> SolarReading | None:
-    """Get the most recent data frame reading from the file."""
-    last = None
-    with open(path) as f:
-        for line in f:
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if record["dir"] != "c2s" or record["len"] != 251:
-                continue
-            raw = bytes.fromhex(record["hex"])
-            reading = decode_data_frame(raw, record["ts"])
-            if reading:
-                last = reading
-    return last
-
-
 def main():
     parser = argparse.ArgumentParser(description="Live FoxESS solar stats")
     parser.add_argument("--once", action="store_true", help="Print latest reading and exit")
-    parser.add_argument("--dir", type=str, help="Captures directory")
+    parser.add_argument("--db", type=str, help="Database path")
     args = parser.parse_args()
 
-    capture_dir = pathlib.Path(args.dir) if args.dir else CAPTURE_DIR
-    if not capture_dir.exists():
-        print(f"No captures directory: {capture_dir}", file=sys.stderr)
-        sys.exit(1)
-
-    path = sorted(capture_dir.glob("capture_*.jsonl"))
-    if not path:
-        print("No capture files found. Is the relay running?", file=sys.stderr)
-        sys.exit(1)
-
-    latest_file = path[-1]
+    conn = open_db(args.db)
 
     if args.once:
-        reading = get_latest_reading(latest_file)
+        reading = get_latest_reading(conn)
         if reading:
             print(format_reading(reading))
         else:
-            print("No data frames in capture file.", file=sys.stderr)
+            print("No readings in database.", file=sys.stderr)
             sys.exit(1)
+        conn.close()
         return
 
-    print(f"Following {latest_file.name}... (Ctrl+C to stop)\n")
+    print("Following database... (Ctrl+C to stop)\n")
+    last_ts = None
     try:
-        for reading in tail_readings(latest_file):
-            # Clear previous output
-            print("\033[2J\033[H", end="")
-            print(format_reading(reading))
-            print("\n  \033[2mUpdates every ~90s. Ctrl+C to stop.\033[0m")
+        while True:
+            reading = get_latest_reading(conn)
+            if reading and reading.timestamp != last_ts:
+                print("\033[2J\033[H", end="")
+                print(format_reading(reading))
+                print("\n  \033[2mUpdates every ~90s. Ctrl+C to stop.\033[0m")
+                last_ts = reading.timestamp
+            time.sleep(1)
     except KeyboardInterrupt:
         print("\nStopped.")
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
