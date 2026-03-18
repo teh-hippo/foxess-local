@@ -500,3 +500,44 @@ Protocol decoded through transparent TLS relay interception, with all fields cro
 - `todayYield` confirmed reset to 0.0 at power-up.
 - `generation` confirmed continuous across overnight boundary.
 - Sunrise correlation: 14/19 match (remaining drifts are timing lag during rapid voltage changes at dawn).
+
+## 7. Datalogger Web Interface (HTTP/WebSocket)
+
+The datalogger also runs a web server on port 80 with a WebSocket-based configuration interface.
+This is a separate protocol from the binary TLS cloud upload described above.
+
+### 7.1 Access
+
+Accessible from two networks simultaneously:
+
+| Network | Address |
+|---------|---------|
+| Dongle AP | `http://192.168.1.1/` (connect to `W-XXXXXXX`, password `mtmt2020`) |
+| LAN | `http://<dongle-ip>/` (may not respond in all firmware versions) |
+
+The AP broadcasts continuously and cannot be disabled.
+
+### 7.2 WebSocket Commands
+
+Single WebSocket at `ws://<address>/`.
+JSON-based. The `fun` field identifies the action.
+Client sends `heart` (plain string, not JSON) every 5 seconds as keepalive.
+
+| Command | Direction | Purpose |
+|---------|-----------|---------|
+| `netInit` | Server → Client | Initial state dump on connect. **Contains home WiFi password in cleartext.** |
+| `netScan` | Client → Server | Trigger WiFi scan. Response: updated `netInit`. |
+| `netSet` | Client → Server | Change WiFi SSID/password. `{"fun": "netSet", "ssid": "...", "password": "..."}` |
+| `portSet` | Client → Server | Change RS485 port. `{"fun": "portSet", "port": "1"}` |
+| `upFile` | Client → Server | Firmware upload. Header then 1024-byte chunks. Max 76KB, checksum = byte sum mod 256. |
+
+### 7.3 Security Vulnerabilities
+
+| Vulnerability | Severity | Description |
+|---------------|----------|-------------|
+| WiFi password leak | High | `netInit` sends home WiFi password in cleartext automatically on connect. No auth required beyond the AP password (`mtmt2020`). CVE pending. [Reference](https://github.com/CP-at-home/FoxESS-CVE) |
+| Unauthenticated firmware upload | High | `upFile` has no auth beyond AP password. Checksum is trivial (byte sum mod 256), no signature verification. |
+| Permanent AP broadcast | Medium | AP always on, SSID contains serial number, cannot be disabled. |
+| No transport encryption | Medium | HTTP and `ws://` (not HTTPS/WSS). All data including WiFi password sent in cleartext over the air. |
+
+**Mitigation**: Place dongle on an isolated VLAN WiFi. See `foxess-network setup`.

@@ -76,34 +76,6 @@ class SolarReading:
         )
 
 
-# -- Frame field definitions --
-# Offsets are into the inner payload (after 9-byte header, before 4-byte trailer)
-
-FIELD_MAP: dict[str, tuple[int, float]] = {
-    # (offset_in_inner_payload, divisor)
-    "grid_direction": (0, 1),
-    "feedin_power_raw": (2, 1),  # signed, negate for kW
-    "grid_consumption_raw": (4, 1000),
-    "generation_power_kw": (6, 1000),
-    "load_power_kw": (10, 1000),
-    "r_volt": (12, 10),
-    "r_current": (14, 10),
-    "r_freq": (16, 100),
-    "r_power_kw": (18, 1000),
-    "pv1_volt": (36, 10),
-    "pv1_current": (38, 10),
-    "pv2_volt": (42, 10),
-    "pv2_current": (44, 10),
-    "pv3_volt": (48, 10),
-    "pv3_current": (50, 10),
-    "pv4_volt": (54, 10),
-    "pv4_current": (56, 10),
-    "boost_temp_c": (60, 1),
-    "inv_temp_c": (62, 1),
-    "ambient_temp_c": (64, 1),
-    "today_yield_kwh": (66, 10),
-}
-
 
 def _i16(data: bytes, offset: int) -> int:
     v = (data[offset] << 8) | data[offset + 1]
