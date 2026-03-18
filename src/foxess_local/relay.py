@@ -11,6 +11,7 @@ Configure via environment variables (see .env.example).
 """
 
 import asyncio
+import concurrent.futures
 import datetime
 import logging
 import os
@@ -36,7 +37,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("foxess.relay")
 
-# Module-level database connection (opened once in _run, shared across handlers)
+# Single-threaded executor serialises all DB writes (SQLite is not thread-safe for concurrent writes)
+_db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="db")
 _db = None
 
 
@@ -57,9 +59,12 @@ def make_upstream_ssl_ctx() -> ssl.SSLContext:
 
 
 def _write_frame(direction: str, data: bytes) -> None:
-    """Synchronous DB write — called via run_in_executor."""
+    """Synchronous DB write — runs in the single-threaded db executor."""
     ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    insert_frame(_db, ts, direction, data)
+    try:
+        insert_frame(_db, ts, direction, data)
+    except Exception:
+        log.error("DB write failed: %s", traceback.format_exc())
 
 
 async def relay(
@@ -75,7 +80,8 @@ async def relay(
             data = await reader.read(8192)
             if not data:
                 break
-            await loop.run_in_executor(None, _write_frame, direction, data)
+            # DB write is best-effort; forwarding is critical
+            loop.run_in_executor(_db_executor, _write_frame, direction, data)
             log.info("%s %s %d bytes", label, direction, len(data))
             writer.write(data)
             await writer.drain()
@@ -149,6 +155,10 @@ def main():
     except Exception:
         log.critical("Fatal error:\n%s", traceback.format_exc())
         raise
+    finally:
+        if _db:
+            _db.close()
+        _db_executor.shutdown(wait=True)
 
 
 if __name__ == "__main__":
