@@ -10,7 +10,8 @@ import json
 import pathlib
 import sqlite3
 
-from foxess_local.decode import SolarReading, decode_data_frame
+from foxess_local.models import SolarReading
+from foxess_local.protocol import decode_data_frame
 
 DEFAULT_DB_PATH = pathlib.Path(__file__).parent.parent.parent / "data" / "foxess.db"
 

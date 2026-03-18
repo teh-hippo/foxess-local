@@ -9,8 +9,8 @@ import argparse
 import sys
 import time
 
-from foxess_local.decode import SolarReading
-from foxess_local.store import open_db, get_latest_reading
+from foxess_local.models import SolarReading
+from foxess_local.store import get_latest_reading, open_db
 
 
 def format_reading(r: SolarReading) -> str:
