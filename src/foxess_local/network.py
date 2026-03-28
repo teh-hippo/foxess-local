@@ -8,8 +8,6 @@ Usage:
     foxess-network teardown   # Remove everything (requires --yes)
     foxess-network status     # Read-only health check
     foxess-network migrate    # Assign fixed IP after dongle joins IoT SSID
-    foxess-network disconnect # Block the dongle on the router
-    foxess-network reconnect  # Unblock the dongle on the router
 """
 
 from __future__ import annotations
@@ -403,27 +401,6 @@ def cmd_migrate(cfg: Config) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Disconnect / Reconnect — block or unblock the dongle on the router
-# ---------------------------------------------------------------------------
-
-def cmd_disconnect(cfg: Config) -> None:
-    api = cfg.api()
-    dongle = _find_dongle(api, cfg)
-    if not dongle:
-        print(f"  Dongle ({cfg.dongle_mac}) not currently connected.")
-        print("  Blocking MAC anyway so it cannot reconnect...")
-
-    api.v1("cmd/stamgr", "POST", {"cmd": "block-sta", "mac": cfg.dongle_mac})
-    print(f"  ✓ Blocked {cfg.dongle_mac} on router — dongle is disconnected.")
-
-
-def cmd_reconnect(cfg: Config) -> None:
-    api = cfg.api()
-    api.v1("cmd/stamgr", "POST", {"cmd": "unblock-sta", "mac": cfg.dongle_mac})
-    print(f"  ✓ Unblocked {cfg.dongle_mac} on router — dongle can reconnect.")
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -432,7 +409,7 @@ def main() -> None:
         prog="foxess-network",
         description="Manage IoT network isolation for the FoxESS datalogger.",
     )
-    parser.add_argument("command", choices=["setup", "teardown", "status", "migrate", "disconnect", "reconnect"])
+    parser.add_argument("command", choices=["setup", "teardown", "status", "migrate"])
     parser.add_argument("--yes", action="store_true", help="Confirm destructive operations")
     args = parser.parse_args()
 
@@ -449,10 +426,6 @@ def main() -> None:
             cmd_status(cfg)
         case "migrate":
             cmd_migrate(cfg)
-        case "disconnect":
-            cmd_disconnect(cfg)
-        case "reconnect":
-            cmd_reconnect(cfg)
 
 
 if __name__ == "__main__":
