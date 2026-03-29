@@ -8,6 +8,8 @@ Usage:
     foxess-network teardown   # Remove everything (requires --yes)
     foxess-network status     # Read-only health check
     foxess-network migrate    # Assign fixed IP after dongle joins IoT SSID
+    foxess-network enable     # Enable relay interception (DNAT on)
+    foxess-network disable    # Disable relay interception (dongle goes direct to cloud)
 """
 
 from __future__ import annotations
@@ -345,9 +347,13 @@ def cmd_status(cfg: Config) -> None:
     dnat = _find_dnat_rule(api)
     if dnat:
         src = dnat.get("source_filter", {}).get("address", "?")
+        enabled = dnat.get("enabled", False)
         iface = dnat.get("in_interface")
         warn = " ⚠ has in_interface" if iface else ""
-        print(f"  DNAT:     ✓ src={src}{warn}")
+        if enabled:
+            print(f"  DNAT:     ✓ enabled — relay intercepting (src={src}){warn}")
+        else:
+            print(f"  DNAT:     ✗ disabled — dongle direct to cloud (src={src}){warn}")
     else:
         print("  DNAT:     ✗ not found")
 
@@ -401,6 +407,40 @@ def cmd_migrate(cfg: Config) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Enable / Disable — toggle relay interception without removing the rule
+# ---------------------------------------------------------------------------
+
+def _set_dnat_enabled(cfg: Config, enabled: bool) -> None:
+    api = cfg.api()
+    dnat = _find_dnat_rule(api)
+    if not dnat:
+        print("  ✗ No DNAT rule found. Run 'foxess-network setup' first.")
+        sys.exit(1)
+
+    if dnat.get("enabled") == enabled:
+        state = "enabled" if enabled else "disabled"
+        print(f"  ✓ DNAT rule already {state}.")
+        return
+
+    updated = {k: v for k, v in dnat.items() if k != "_id"}
+    updated["enabled"] = enabled
+    api.v2(f"nat/{dnat['_id']}", "PUT", updated)
+
+    if enabled:
+        print("  ✓ Relay interception enabled — dongle traffic routed through relay.")
+    else:
+        print("  ✓ Relay interception disabled — dongle connects direct to cloud.")
+
+
+def cmd_enable(cfg: Config) -> None:
+    _set_dnat_enabled(cfg, True)
+
+
+def cmd_disable(cfg: Config) -> None:
+    _set_dnat_enabled(cfg, False)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -409,7 +449,7 @@ def main() -> None:
         prog="foxess-network",
         description="Manage IoT network isolation for the FoxESS datalogger.",
     )
-    parser.add_argument("command", choices=["setup", "teardown", "status", "migrate"])
+    parser.add_argument("command", choices=["setup", "teardown", "status", "migrate", "enable", "disable"])
     parser.add_argument("--yes", action="store_true", help="Confirm destructive operations")
     args = parser.parse_args()
 
@@ -426,6 +466,10 @@ def main() -> None:
             cmd_status(cfg)
         case "migrate":
             cmd_migrate(cfg)
+        case "enable":
+            cmd_enable(cfg)
+        case "disable":
+            cmd_disable(cfg)
 
 
 if __name__ == "__main__":

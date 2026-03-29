@@ -40,6 +40,8 @@ uv run foxess-live
 | `uv run foxess-network setup` | Create isolated IoT network + NAT rules |
 | `uv run foxess-network status` | Check network isolation status |
 | `uv run foxess-network teardown` | Remove all managed network rules |
+| `uv run foxess-network enable` | Enable relay interception (DNAT on) |
+| `uv run foxess-network disable` | Disable relay interception (direct to cloud) |
 
 ## ⚠️ Security: isolate the dongle
 
@@ -57,6 +59,14 @@ See [docs/PROTOCOL.md §7](docs/PROTOCOL.md) for the full vulnerability details.
 
 The dongle connects to a hardcoded IP on port 14431.
 A DNAT rule on the router redirects this traffic to the relay.
+
+**Stopping the relay**: If you stop the relay without disabling the DNAT rule, the dongle can't reach the FoxESS cloud and all data stops flowing (including to the HA integration). Always disable interception first:
+
+```bash
+uv run foxess-network disable   # dongle goes direct to cloud
+# ... later, when restarting the relay:
+uv run foxess-network enable    # dongle routes through relay again
+```
 
 `foxess-network` manages this via the UniFi API (no SSH required).
 For non-UniFi routers:
