@@ -14,5 +14,5 @@ updates:
         applies-to: version-updates
         update-types: ["minor", "patch"]
     commit-message:
-      prefix: "build(deps)"
+      prefix: "build"
       include: "scope"
