@@ -1,0 +1,18 @@
+version: 2
+
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Australia/Sydney"
+    open-pull-requests-limit: 10
+    groups:
+      all-non-major:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "build(deps)"
+      include: "scope"
