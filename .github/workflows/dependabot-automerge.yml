@@ -37,10 +37,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          if gh pr merge --auto --rebase "$PR_URL" 2>/dev/null; then
-            echo "::notice::Native auto-merge enabled (branch protection in effect)"
-            exit 0
-          fi
+          for attempt in $(seq 1 3); do
+            if merge_error=$(gh pr merge --auto --rebase "$PR_URL" 2>&1); then
+              echo "::notice::Native auto-merge enabled (branch protection in effect)"
+              exit 0
+            fi
+            if [[ "$merge_error" == *"Base branch was modified"* ]]; then
+              if [ "$attempt" -lt 3 ]; then
+                echo "::notice::Base branch was modified while enabling auto-merge; retrying ($attempt/3)"
+                sleep 5
+                continue
+              fi
+            else
+              printf "%s\n" "$merge_error" >&2
+              exit 1
+            fi
+            printf "%s\n" "$merge_error" >&2
+            exit 1
+          done
           echo "::notice::No branch protection - polling check status"
 
           total=0
