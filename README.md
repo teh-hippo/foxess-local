@@ -84,9 +84,11 @@ See [docs/PROTOCOL.md](docs/PROTOCOL.md) for the full specification.
 22 sensor fields decoded and verified against the FoxESS Cloud API.
 2600+ frames captured with 0 CRC mismatches across 3 days.
 
-## Development (WSL)
+## Relay host
 
-The relay runs in WSL. LAN devices can't reach WSL directly — Windows `netsh portproxy` bridges the gap.
+The relay can run on any host the IoT VLAN can reach; set `FOXESS_RELAY_HOST` to its IP and re-run `foxess-network setup` to repoint the firewall allow rule and DNAT target.
+
+If the relay runs in WSL, LAN devices can't reach it directly — Windows `netsh portproxy` bridges the gap.
 
 ```powershell
 # Find WSL IP
