@@ -197,6 +197,11 @@ def cmd_setup(cfg: Config) -> bool:
     default_zone = _find_default_zone(api)
     if fw:
         print("  ✓ Firewall allow-relay rule")
+        if fw["destination"].get("ips") != [cfg.relay_host]:
+            updated = {k: v for k, v in fw.items() if k != "_id"}
+            updated["destination"] = {**fw["destination"], "ips": [cfg.relay_host]}
+            api.v2(f"firewall-policies/{fw['_id']}", "PUT", updated)
+            print(f"    ~ Updated destination to {cfg.relay_host}")
     elif zone_id and default_zone:
         print("  + Creating firewall allow-relay rule...")
         api.v2("firewall-policies", "POST", {
@@ -241,10 +246,14 @@ def cmd_setup(cfg: Config) -> bool:
     if dnat:
         src = dnat.get("source_filter", {}).get("address", "?")
         print(f"  ✓ DNAT rule (src={src})")
+        updated = {k: v for k, v in dnat.items() if k not in ("_id", "in_interface")}
         if dnat.get("in_interface"):
-            updated = {k: v for k, v in dnat.items() if k not in ("_id", "in_interface")}
-            api.v2(f"nat/{dnat['_id']}", "PUT", updated)
             print("    ~ Removed in_interface (now VLAN-agnostic)")
+        if dnat.get("ip_address") != cfg.relay_host:
+            updated["ip_address"] = cfg.relay_host
+            print(f"    ~ Updated target to {cfg.relay_host}")
+        if updated != {k: v for k, v in dnat.items() if k != "_id"}:
+            api.v2(f"nat/{dnat['_id']}", "PUT", updated)
     else:
         print("  + Creating DNAT rule...")
         _filter = {"filter_type": "ADDRESS_AND_PORT", "firewall_group_ids": [],

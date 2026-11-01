@@ -23,7 +23,7 @@ from foxess_local.store import open_db, insert_frame
 
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = int(os.environ.get("FOXESS_UPSTREAM_PORT", "14431"))
-UPSTREAM_HOST = os.environ.get("FOXESS_UPSTREAM_HOST", "47.91.86.144")
+UPSTREAM_HOST = os.environ.get("FOXESS_UPSTREAM_HOST", "8.209.116.72")
 UPSTREAM_PORT = int(os.environ.get("FOXESS_UPSTREAM_PORT", "14431"))
 
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent.parent
