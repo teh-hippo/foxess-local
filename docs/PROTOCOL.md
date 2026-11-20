@@ -154,7 +154,7 @@ Datalogger                                Server
 | Connect | Around sunrise | Datalogger powers up when PV voltage exceeds ~80V. Varies with cloud cover. |
 | Data cycle | Every ~90s | 3 messages per cycle: 0x02, 0x06, 0x01 (circular — starting point varies per session, all three rotations observed) |
 | Disconnect | Around sunset | PV voltage drops below ~80V. Last data frame sent, then TCP close. |
-| Session duration | Daylight hours | Matches daylight hours. Varies with season and weather. |
+| Session duration | Daylight hours | Varies with season and weather. |
 
 ### 3.3 Sunrise Boot Sequence
 
@@ -493,12 +493,12 @@ Protocol decoded through transparent TLS relay interception, with all fields cro
 
 **Overnight:**
 - Relay ran 15+ hours continuously with no crashes (8 overnight health checks, all passed).
-- Dongle offline from sunset to sunrise.
+- Dongle remained offline overnight.
 
 **Day 2 (sunrise):**
 - Dongle reconnected at sunrise (different server IP from day 1).
 - `todayYield` confirmed reset to 0.0 at power-up.
-- `generation` confirmed continuous across overnight boundary.
+- `generation` confirmed continuous across the overnight boundary.
 - Sunrise correlation: 14/19 match (remaining drifts are timing lag during rapid voltage changes at dawn).
 
 ## 7. Datalogger Web Interface (HTTP/WebSocket)
